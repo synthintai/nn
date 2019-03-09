@@ -4,6 +4,8 @@ Neural Network library
 
 Copyright (c) 2019 Cole Design and Development, LLC
 
+https://coledd.com
+
 SPDX-License-Identifier: Apache-2.0
 
 ## Overview

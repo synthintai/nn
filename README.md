@@ -1,4 +1,4 @@
-![](logo.png){width=200px}
+<img src="https://github.com/coledd/nn/blob/master/logo.png" width="300">
 
 Neural Network library
 
@@ -60,5 +60,4 @@ To use the trained model:
 
 The network architecture is a fully connected feed-forward neural network. The widths of each layer, the activation function to be used, and the bias for each layer is set as each successive layer is added to the network using the `nn_add_layer()` function call. Multiple layers may be added to construct a deep neural network.
 
-![](nn.png){width=400px}
-
+<img src="https://github.com/coledd/nn/blob/master/nn.png" width="600">

@@ -177,9 +177,6 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 	for (i=0; i<nn->widths[nn->num_layers-2]; i++) {
 		sum=0;
 		// Backpropagation Reference: Deep Learning Vol. 1, From Basics to Practice
-		// https://www.edureka.co/blog/backpropagation/
-		// https://google-developers.appspot.com/machine-learning/crash-course/backprop-scroll/
-		// Backpropagation Reference: Deep Learning Vol. 1, From Basics to Practice
 		// Calculate total error at the output layer
 		for (j=0; j<nn->widths[nn->num_layers-1]; j++) {
 			// Derivative of the error

@@ -74,7 +74,7 @@ data_t *data_init(int num_rows, int num_inputs, int num_outputs)
 void parse(data_t *data, char *line, int row)
 {
 	for (int column=0; column<(data->num_inputs+data->num_outputs); column++) {
-		float val=atof(strtok(column==0?line:NULL, " "));
+		float val=atof(strtok(column==0?line:NULL, ","));
 		if (column<data->num_inputs)
 			data->input[row][column]=val;
 		else
@@ -176,12 +176,12 @@ int main(void)
 	// Set the random seed
 	srand(time(0));
 	// Load sample data into a data structure in memory
-	data=load_data("data.txt", num_inputs, num_outputs);
+	data=load_data("train.csv", num_inputs, num_outputs);
 	// Initialize a neural network model
 	nn=nn_init();
 	// Construct the neural network, layer by layer
 	nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
-	nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_TANH, 0);
+	nn_add_layer(nn, 150, ACTIVATION_FUNCTION_TYPE_TANH, 0);
 	nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 	// It is critical to shuffle training data to properly train the model
 	shuffle(data);

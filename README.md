@@ -63,3 +63,9 @@ To use the trained model:
 The network architecture is a fully connected feed-forward neural network. The widths of each layer, the activation function to be used, and the bias for each layer is set as each successive layer is added to the network using the `nn_add_layer()` function call. Multiple layers may be added to construct a deep neural network.
 
 <img src="https://github.com/coledd/nn/blob/master/nn.png" width="600">
+
+## License
+Copyright (c) Cole Design and Development, LLC. All rights reserved.
+
+Licensed under the [Apache License](./LICENSE).
+

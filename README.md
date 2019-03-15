@@ -14,11 +14,13 @@ This is a lightweight neural network library for use in microcontrollers and emb
 
 The code is divided into three sections:
 
-1. `nn.[ch]` - this is the neural net library, which can be pulled into a project in whole, and should not require modification to use.
+1. `nn.[ch]` - The neural net library, which can be pulled into a project in whole, and should not require modification to use.
 
-2. `train.c` - this is an example of how to use nn.c to construct, train, and save a neural network model.
+2. `train.c` - An example of how to use nn.c to construct, train, and save a neural network model.
 
-3. `predict.c` - this code demonstrates how to use a saved neural network model to make predictions on new data.
+3. `test.c` - Evaluates the model performance, comparing that of seen vs. unseen data.
+
+3. `predict.c` - Demonstrates how to use a saved neural network model in the target application to make predictions on new data.
 
 ## Features
 
@@ -51,6 +53,12 @@ To train:
 The included example data is the Semeion Handwritten Digit Data Set from the UCI Machine Learning Repository at:
 
 http://archive.ics.uci.edu/ml/datasets/semeion+handwritten+digit
+
+
+To evaluate the model performance:
+```
+./test
+```
 
 
 To use the trained model:

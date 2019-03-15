@@ -20,7 +20,7 @@ The code is divided into three sections:
 
 3. `test.c` - Evaluates the model performance, comparing that of seen vs. unseen data.
 
-3. `predict.c` - Demonstrates how to use a saved neural network model in the target application to make predictions on new data.
+4. `predict.c` - Demonstrates how to use a saved neural network model in the target application to make predictions on new data.
 
 ## Features
 

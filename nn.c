@@ -51,6 +51,14 @@ static float activation_function_leaky_relu(float a, bool derivative)
 	return (derivative?0.01:a*0.01f);
 }
 
+// Exponential Linear Unit (ELU) activation function
+static float activation_function_elu(float a, bool derivative)
+{
+	if (a>=0)
+		return (derivative?1:a);
+	return (derivative?activation_function_elu(a,false):expf(a)-1);
+}
+
 // Threshold activation function
 static float activation_function_threshold(float a, bool derivative)
 {
@@ -59,7 +67,7 @@ static float activation_function_threshold(float a, bool derivative)
 	return a>0;
 }
 
-// Sigmoid activation function
+// Sigmoid activation function (aka Logistic, aka Soft Step)
 static float activation_function_sigmoid(float a, bool derivative)
 {
 	if (derivative) {
@@ -114,6 +122,7 @@ static activation_function_ptr_t activation_functions[]={
 	activation_function_linear,
 	activation_function_relu,
 	activation_function_leaky_relu,
+	activation_function_elu,
 	activation_function_threshold,
 	activation_function_sigmoid,
 	activation_function_sigmoid_lookup,

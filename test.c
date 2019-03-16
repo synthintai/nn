@@ -188,7 +188,7 @@ int main(void)
 				if (prediction[j]>0.5)
 					true_positive++;
 	}
-	printf("%d/%d=%2.2f%%\n", true_positive, num_samples, (true_positive*100.0)/num_samples);
+	printf("Train: %d/%d = %2.2f%%\n", true_positive, num_samples, (true_positive*100.0)/num_samples);
 	data_free(data);
 
 	// Load unseen data into a data structure in memory
@@ -204,7 +204,7 @@ int main(void)
 				if (prediction[j]>0.5)
 					true_positive++;
 	}
-	printf("%d/%d=%2.2f%%\n", true_positive, num_samples, (true_positive*100.0)/num_samples);
+	printf("Test: %d/%d = %2.2f%%\n", true_positive, num_samples, (true_positive*100.0)/num_samples);
 	data_free(data);
 
 	nn_free(model);

@@ -11,7 +11,7 @@
 #include <time.h>
 #include "nn.h"
 
-// Data object
+// Data structure to hold the sample data
 typedef struct {
 	int num_rows;		// Number of rows of data
 	int num_inputs;		// Number of inputs to neural network

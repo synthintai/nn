@@ -73,6 +73,7 @@ The network architecture is a fully connected feed-forward neural network. The w
 <img src="https://github.com/coledd/nn/blob/master/nn.png" width="600">
 
 ## License
+
 Copyright (c) Cole Design and Development, LLC. All rights reserved.
 
 Licensed under the [Apache License 2.0](./LICENSE).

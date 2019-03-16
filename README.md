@@ -30,6 +30,7 @@ With this library, neural networks of any width and depth may be constructed and
 * Linear
 * ReLU
 * Leaky ReLU
+* ELU
 * Threshold
 * Sigmoid
 * TanH

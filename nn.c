@@ -38,7 +38,7 @@ static float activation_function_linear(float a, bool derivative)
 // Rectified Linear Unit (ReLU) activation function
 static float activation_function_relu(float a, bool derivative)
 {
-	if (a>0)
+	if (a>=0)
 		return (derivative?1:a);
 	return 0;
 }
@@ -165,7 +165,7 @@ float *nn_predict(nn_t *nn, float *inputs)
 }
 
 // Trains a nn with a given input and target output at a specified learning rate
-// Returns the total error between the target and the output
+// Returns the total error between the target and the output of the neural network
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 {
 	float de, da, sum;
@@ -184,10 +184,10 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 			// Derivative of the activation function
 			da=activation_functions[nn->activations[nn->num_layers-1]](nn->neurons[nn->num_layers-1][j], true);
 			sum+=de*da*nn->weights[nn->num_layers-1][j][i];
-			// Correct the weights b/t this layer and the next layer
+			// Correct the weights between this layer and the next layer
 			nn->weights[nn->num_layers-1][j][i]-=rate*de*da*nn->neurons[nn->num_layers-2][i];
 		}
-		// Correct weights b/t previous layer and this one
+		// Correct weights between previous layer and this one
 		for (layer=nn->num_layers-2; layer>0; layer--)
 			for (j=0; j<nn->widths[layer-1]; j++)
 				nn->weights[layer][i][j]-=rate*(sum+nn->biases[layer])*activation_functions[nn->activations[layer]](nn->neurons[layer][i], true)*nn->neurons[layer-1][j];
@@ -319,15 +319,13 @@ void nn_free(nn_t *nn)
 
 	// There are no weights associated with the input layer, so we skip layer 0 and start at layer 1.
 	for (layer=1; layer<nn->num_layers; layer++) {
-		for (i=0; i<nn->widths[layer]; i++) {
+		for (i=0; i<nn->widths[layer]; i++)
 			free(nn->weights[layer][i]);
-		}
 		free(nn->weights[layer]);
 	}
 	// There are no neurons in the input layer, as the input array itself is used to store these values.
-	for (layer=1; layer<nn->num_layers; layer++) {
+	for (layer=1; layer<nn->num_layers; layer++)
 		free(nn->neurons[layer]);
-	}
 	free(nn->weights);
 	free(nn->neurons);
 	free(nn->biases);

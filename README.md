@@ -12,7 +12,7 @@ SPDX-License-Identifier: Apache-2.0
 
 This is a lightweight neural network library for use in microcontrollers and embedded systems. 
 
-The code is divided into three sections:
+The code is divided into the following sections:
 
 1. `nn.[ch]` - The neural net library, which can be pulled into a project in whole, and should not require modification to use.
 

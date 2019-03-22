@@ -73,6 +73,8 @@ The network architecture is a fully connected feed-forward neural network. The w
 
 <img src="https://github.com/coledd/nn/blob/master/nn.png" width="600">
 
+(The size and number of layers in a given neural network may vary from the one depicted above)
+
 ## Demonstration
 
 This embedded neural network library was used to power a handwritten character recognition application running on an STM32H7 microcontroller. Check it out here:

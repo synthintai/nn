@@ -1,6 +1,6 @@
 /*
  * Neural Network library
- * Copyright (c) 2019 Cole Design and Development, LLC
+ * Copyright (c) 2019-2020 Cole Design and Development, LLC
  * https://coledd.com
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -9,7 +9,7 @@
 #define NN_H
 
 typedef enum activation_function_type {
-	ACTIVATION_FUNCTION_TYPE_NONE=0,
+	ACTIVATION_FUNCTION_TYPE_NONE = 0,
 	ACTIVATION_FUNCTION_TYPE_IDENTITY,
 	ACTIVATION_FUNCTION_TYPE_LINEAR,
 	ACTIVATION_FUNCTION_TYPE_RELU,

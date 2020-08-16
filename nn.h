@@ -32,12 +32,12 @@ typedef struct nn {
 } nn_t;
 
 nn_t *nn_init(void);
+void nn_free(nn_t *nn);
 int nn_add_layer(nn_t *nn, int width, int activation, float bias);
-float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 int nn_save(nn_t *nn, char *path);
 nn_t *nn_load(char *path);
+float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);
-void nn_free(nn_t *nn);
 
 #endif /* NN_H */
 

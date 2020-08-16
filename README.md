@@ -2,7 +2,7 @@
 
 Neural Network library
 
-Copyright (c) 2019 Cole Design and Development, LLC
+Copyright (c) 2019-2020 Cole Design and Development, LLC
 
 https://coledd.com
 
@@ -10,17 +10,19 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Overview
 
-This is a lightweight neural network library for use in microcontrollers and embedded systems. 
+This is a lightweight neural network library for use in microcontrollers and embedded systems.
 
 The code is divided into the following sections:
 
-1. `nn.[ch]` - The neural net library, which can be pulled into a project in whole, and should not require modification to use.
+1. `nn.[ch]` - The neural net library, which can be pulled directly into a project.
 
-2. `train.c` - An example of how to use nn.c to construct, train, and save a neural network model.
+2. `data_prep.[ch]` - Data processing functions, used to read, parse, and shuffle sample data on which to train a model.
 
-3. `test.c` - Evaluates the model performance, comparing that of seen vs. unseen data.
+3. `train.c` - An example of how to construct, train, and save a neural network model.
 
-4. `predict.c` - Demonstrates how to use a saved neural network model in the target application to make predictions on new data.
+4. `test.c` - Evaluates the model performance, comparing predictions to ground truth of seen vs. unseen data.
+
+5. `predict.c` - Demonstrates how to use a trained neural network model in a target application to make predictions on new data.
 
 ## Features
 
@@ -69,11 +71,7 @@ To use the trained model:
 
 ## Architecture
 
-The network architecture is a fully connected feed-forward neural network. The widths of each layer, the activation function to be used, and the bias for each layer is set as each successive layer is added to the network using the `nn_add_layer()` function call. Multiple layers may be added to construct a deep neural network.
-
-<img src="https://github.com/coledd/nn/blob/master/nn.png" width="600">
-
-(The size and number of layers in a given neural network may vary from the one depicted above)
+The network architecture is a fully connected feed-forward neural network. It is based on floating-point computation. The widths of each layer, the activation function to be used, and the bias for each layer is set as each successive layer is added to the network using the `nn_add_layer()` function call. Multiple layers may be added to construct a deep neural network.
 
 ## Demonstration
 

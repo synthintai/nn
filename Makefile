@@ -15,10 +15,7 @@ test: test.c nn.o data_prep.o
 predict: predict.c nn.o
 	$(CC) -Wall predict.c nn.o -o predict -lm -march=native -Ofast
 
-nn.png: nn.dot
-	dot -Tpng nn.dot -o nn.png
-
-README.pdf: README.md nn.png
+README.pdf: README.md
 	pandoc README.md -o README.pdf
 
 tags:

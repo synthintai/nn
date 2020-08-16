@@ -78,7 +78,7 @@ static float activation_function_sigmoid(float a, bool derivative)
 }
 
 // Sigmoid activation function using a lookup table
-static float activation_function_sigmoid_lookup(float a, bool derivative)
+static float activation_function_sigmoid_fast(float a, bool derivative)
 {
 	// Sigmoid outputs
 	const float s[] = {0.0,0.000045,0.000123,0.000335,0.000911,0.002473,0.006693,0.017986,0.047426,0.119203,0.268941,0.500000,0.731059,0.880797,0.952574,0.982014,0.993307,0.997527,0.999089,0.999665,0.999877,0.999955,1.0};
@@ -125,7 +125,7 @@ static activation_function_ptr_t activation_functions[] = {
 	activation_function_elu,
 	activation_function_threshold,
 	activation_function_sigmoid,
-	activation_function_sigmoid_lookup,
+	activation_function_sigmoid_fast,
 	activation_function_tanh,
 	activation_function_tanh_fast
 };

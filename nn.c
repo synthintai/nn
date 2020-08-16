@@ -131,7 +131,7 @@ static activation_function_ptr_t activation_functions[] = {
 };
 
 // Returns floating point random number between 0 and 1
-static float frand()
+static float frand(void)
 {
 	return rand() / (float)RAND_MAX;
 }

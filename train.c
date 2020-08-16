@@ -25,7 +25,7 @@ data_t *data_init(int num_rows, int num_inputs, int num_outputs)
 {
 	data_t *data = NULL;
 
-	data=(data_t *)malloc(sizeof(data_t));
+	data = (data_t *)malloc(sizeof(data_t));
 	if (NULL == data)
 		return NULL;
 	data->num_rows = num_rows;

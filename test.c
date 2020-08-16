@@ -11,7 +11,7 @@
 #include <time.h>
 #include "nn.h"
 
-// Data object
+// Data structure to hold the sample data
 typedef struct {
 	int num_rows;		// Number of rows of data
 	int num_inputs;		// Number of inputs to neural network
@@ -73,12 +73,12 @@ data_t *data_init(int num_rows, int num_inputs, int num_outputs)
 // Splits inputs and outputs into two separate data tables within the data structure
 void parse(data_t *data, char *line, int row)
 {
-	for (int column = 0; column < (data->num_inputs+data->num_outputs); column++) {
+	for (int column = 0; column < (data->num_inputs + data->num_outputs); column++) {
 		float val = atof(strtok(column == 0 ? line : NULL, ","));
 		if (column < data->num_inputs)
 			data->input[row][column] = val;
 		else
-			data->target[row][column-data->num_inputs] = val;
+			data->target[row][column - data->num_inputs] = val;
 	}
 }
 

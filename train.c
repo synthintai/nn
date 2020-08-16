@@ -32,7 +32,7 @@ int main(void)
 	nn=nn_init();
 	// Construct the neural network, layer by layer
 	nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
-	nn_add_layer(nn, 110, ACTIVATION_FUNCTION_TYPE_RELU, 0);
+	nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_RELU, 0);
 	nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 	// It is critical to shuffle training data to properly train the model
 	shuffle(data);

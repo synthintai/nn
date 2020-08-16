@@ -77,6 +77,10 @@ This embedded neural network library was used to power a handwritten character r
 
 https://www.youtube.com/watch?v=cqjwSkrGtww
 
+## Model File Format
+
+The model file is saved as an ASCII file of floating-point values. The first line depicts the number of layers, inclusive of the input and output layers. The construct of each of those layers comprises the next set of lines, one line for each layer. The format of each line is width (in neurons), activation function, and bias. The remaining lines are the weights of each neuron in each layer, for all layers. Since there are no weights associated with the neurons in the input layer, these are skipped, and do not exist in the model file.
+
 ## License
 
 Copyright (c) 2019-2020 Cole Design and Development, LLC. All rights reserved.

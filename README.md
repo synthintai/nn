@@ -1,5 +1,3 @@
-<img src="https://github.com/coledd/nn/blob/master/logo.png" width="300">
-
 Neural Network library
 
 Copyright (c) 2019-2020 Cole Design and Development, LLC
@@ -81,7 +79,7 @@ https://www.youtube.com/watch?v=cqjwSkrGtww
 
 ## License
 
-Copyright (c) Cole Design and Development, LLC. All rights reserved.
+Copyright (c) 2019-2020 Cole Design and Development, LLC. All rights reserved.
 
 Licensed under the [Apache License 2.0](./LICENSE).
 

@@ -1,4 +1,4 @@
-Neural Network library
+Neural Network library for embedded systems
 
 Copyright (c) 2019-2020 Cole Design and Development, LLC
 

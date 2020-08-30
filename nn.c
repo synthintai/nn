@@ -314,7 +314,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 			de = error_derivative(nn->neurons[nn->num_layers - 1][j], targets[j]);
 			// Derivative of the activation function
 			da = activation_functions[nn->activations[nn->num_layers - 1]](nn->neurons[nn->num_layers - 1][j], true);
-			sum += de *da * nn->weights[nn->num_layers - 1][j][i];
+			sum += de * da * nn->weights[nn->num_layers - 1][j][i];
 			// Correct the weights between this layer and the next layer
 			nn->weights[nn->num_layers - 1][j][i] -= rate * de * da * nn->neurons[nn->num_layers - 2][i];
 		}

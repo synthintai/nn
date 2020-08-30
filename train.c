@@ -16,9 +16,9 @@ int main(void)
 	// Tunable hyperparameters
 	int num_inputs = 256;
 	int num_outputs = 10;
-	float learning_rate = 0.001f;
+	float learning_rate = 0.01f;
 	float annealing = 1.0f;
-	int epochs = 500;
+	int epochs = 200;
 	// End of tunable parameters
 	data_t *data;
 	nn_t *nn;
@@ -29,7 +29,7 @@ int main(void)
 	// Load sample data into a data structure in memory
 	data = load_data("train.csv", num_inputs, num_outputs);
 	// Initialize a neural network model
-	nn=nn_init();
+	nn = nn_init();
 	// Construct the neural network, layer by layer
 	nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
 	nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_RELU, 0);

@@ -23,12 +23,15 @@ typedef enum activation_function_type {
 } activation_function_type_t;
 
 typedef struct nn {
-	int num_layers;		// Number of layers
-	int *widths;		// Number of neurons by layer
-	int *activations;	// Activation function used for each layer
-	float *biases;		// Biases by layer
-	float **neurons;	// Neurons by layer
-	float ***weights;	// Weights by layer
+	int depth;			// Number of layers, including the input and the output layers
+	int *width;			// Number of neurons in each layer
+	int *activation;	// Activation function used for each layer
+	float *bias;		// Biases by layer
+	float **neuron;		// Output value for each neuron in each layer
+	float **loss;		// Error derivative for each neuron in each layer
+	float **preact;		// Neuron values before activation function is applied for each neuron in each layer
+	float ***weight;	// Weight of each neuron in each layer
+	float ***weight_adj;// Adjustment of each weight for each neuron in each layer
 } nn_t;
 
 nn_t *nn_init(void);

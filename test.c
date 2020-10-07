@@ -24,14 +24,14 @@ int main(void)
 		return 1;
 	}
 	// Load training data into a data structure in memory
-	data = load_data("train.csv", model->widths[0], model->widths[model->num_layers - 1]);
+	data = load_data("train.csv", model->width[0], model->width[model->depth - 1]);
 	num_samples = 0;
 	true_positive = 0;
 	for (int i = 0; i < data->num_rows; i++) {
 		num_samples++;
 		// Make an output prediction based upon new input data
 		prediction = nn_predict(model, data->input[i]);
-		for (int j = 0; j < model->widths[model->num_layers - 1]; j++)
+		for (int j = 0; j < model->width[model->depth - 1]; j++)
 			if (data->target[i][j] > 0.5)
 				if (prediction[j] > 0.5)
 					true_positive++;
@@ -39,14 +39,14 @@ int main(void)
 	printf("Train: %d/%d = %2.2f%%\n", true_positive, num_samples, (true_positive * 100.0) / num_samples);
 	data_free(data);
 	// Load unseen data into a data structure in memory
-	data = load_data("test.csv", model->widths[0], model->widths[model->num_layers - 1]);
+	data = load_data("test.csv", model->width[0], model->width[model->depth - 1]);
 	num_samples = 0;
 	true_positive = 0;
 	for (int i = 0; i < data->num_rows; i++) {
 		num_samples++;
 		// Make an output prediction based upon new input data
 		prediction = nn_predict(model, data->input[i]);
-		for (int j = 0; j < model->widths[model->num_layers - 1]; j++)
+		for (int j = 0; j < model->width[model->depth - 1]; j++)
 			if (data->target[i][j] > 0.5)
 				if (prediction[j] > 0.5)
 					true_positive++;

@@ -40,7 +40,7 @@ int main(void)
 	}
 	// Make an output prediction based upon new input data
 	float *prediction = nn_predict(model, inputs);
-	for (int i = 0; i < model->widths[model->num_layers - 1]; i++)
+	for (int i = 0; i < model->width[model->depth - 1]; i++)
 		printf("%d: %.5f\n", i, prediction[i]);
 	nn_free(model);
 	return 0;

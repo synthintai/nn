@@ -148,22 +148,6 @@ static float error_derivative(float a, float b)
 	return a - b;
 }
 
-static void forward_propagation(nn_t *nn)
-{
-	float sum;
-	int i, j, layer;
-
-	// Calculate neuron values in each layer
-	for (layer = 1; layer < nn->num_layers; layer++) {
-		for (i = 0; i < nn->widths[layer]; i++) {
-			sum = 0;
-			for (j = 0; j < nn->widths[layer - 1]; j++)
-				sum += nn->neurons[layer - 1][j] * nn->weights[layer][i][j];
-			nn->neurons[layer][i] = activation_functions[nn->activations[layer]](sum + nn->biases[layer], false);
-		}
-	}
-}
-
 nn_t *nn_init(void)
 {
 	nn_t *nn;
@@ -171,12 +155,15 @@ nn_t *nn_init(void)
 	nn = (nn_t *)malloc(sizeof(nn_t));
 	if (NULL == nn)
 		return NULL;
-	nn->num_layers = 0;
-	nn->widths = NULL;
-	nn->weights = NULL;
-	nn->neurons = NULL;
-	nn->biases = NULL;
-	nn->activations = NULL;
+	nn->depth = 0;
+	nn->width = NULL;
+	nn->weight = NULL;
+	nn->weight_adj = NULL;
+	nn->neuron = NULL;
+	nn->loss = NULL;
+	nn->preact = NULL;
+	nn->bias = NULL;
+	nn->activation = NULL;
 	return nn;
 }
 
@@ -185,59 +172,89 @@ void nn_free(nn_t *nn)
 	int layer, i;
 
 	// There are no weights associated with the input layer, so we skip layer 0 and start at layer 1.
-	for (layer = 1; layer < nn->num_layers; layer++) {
-		for (i = 0; i < nn->widths[layer]; i++)
-			free(nn->weights[layer][i]);
-		free(nn->weights[layer]);
+	for (layer = 1; layer < nn->depth; layer++) {
+		for (i = 0; i < nn->width[layer]; i++) {
+			free(nn->weight[layer][i]);
+			free(nn->weight_adj[layer][i]);
+		}
+		free(nn->weight[layer]);
+		free(nn->weight_adj[layer]);
 	}
 	// There are no neurons in the input layer, as the input array itself is used to store these values.
-	for (layer = 1; layer < nn->num_layers; layer++)
-		free(nn->neurons[layer]);
-	free(nn->weights);
-	free(nn->neurons);
-	free(nn->biases);
-	free(nn->activations);
-	free(nn->widths);
+	for (layer = 1; layer < nn->depth; layer++) {
+		free(nn->neuron[layer]);
+		free(nn->loss[layer]);
+		free(nn->preact[layer]);
+	}
+	free(nn->weight);
+	free(nn->weight_adj);
+	free(nn->neuron);
+	free(nn->loss);
+	free(nn->preact);
+	free(nn->bias);
+	free(nn->activation);
+	free(nn->width);
 	free(nn);
 }
 
 int nn_add_layer(nn_t *nn, int width, int activation, float bias)
 {
-	nn->num_layers++;
-	nn->widths = (int *)realloc(nn->widths, nn->num_layers * sizeof(*nn->widths));
-	if (NULL == nn->widths)
+	nn->depth++;
+	nn->width = (int *)realloc(nn->width, nn->depth * sizeof(*nn->width));
+	if (NULL == nn->width)
 		return 1;
-	nn->widths[nn->num_layers - 1] = width;
-	nn->activations = (int *)realloc(nn->activations, nn->num_layers * sizeof(*nn->activations));
-	if (NULL == nn->activations)
+	nn->width[nn->depth - 1] = width;
+	nn->activation = (int *)realloc(nn->activation, nn->depth * sizeof(*nn->activation));
+	if (NULL == nn->activation)
 		return 1;
-	nn->activations[nn->num_layers -1 ] = activation;
-	nn->biases = (float *)realloc(nn->biases, nn->num_layers * sizeof(*nn->biases));
-	if (NULL == nn->biases)
+	nn->activation[nn->depth - 1] = activation;
+	nn->bias = (float *)realloc(nn->bias, nn->depth * sizeof(*nn->bias));
+	if (NULL == nn->bias)
 		return 1;
-	nn->biases[nn->num_layers - 1] = bias;
-	nn->neurons=(float **)realloc(nn->neurons, nn->num_layers * sizeof(float *));
-	if (NULL == nn->neurons)
+	nn->bias[nn->depth - 1] = bias;
+	nn->neuron = (float **)realloc(nn->neuron, nn->depth * sizeof(float *));
+	if (NULL == nn->neuron)
 		return 1;
-	if (nn->num_layers > 1) {
-		nn->neurons[nn->num_layers - 1] = (float *)malloc(nn->widths[nn->num_layers - 1] * sizeof(float));
-		if (NULL == nn->neurons[nn->num_layers - 1])
+	nn->loss = (float **)realloc(nn->loss, nn->depth * sizeof(float *));
+	if (NULL == nn->loss)
+		return 1;
+	nn->preact = (float **)realloc(nn->preact, nn->depth * sizeof(float *));
+	if (NULL == nn->preact)
+		return 1;
+	if (nn->depth > 1) {
+		nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+		if (NULL == nn->neuron[nn->depth - 1])
+			return 1;
+		nn->loss[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+		if (NULL == nn->loss[nn->depth - 1])
+			return 1;
+		nn->preact[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+		if (NULL == nn->preact[nn->depth - 1])
 			return 1;
 	}
-	nn->weights = (float ***)realloc(nn->weights, (nn->num_layers) * sizeof(float **));
-	if (NULL == nn->weights)
+	nn->weight = (float ***)realloc(nn->weight, (nn->depth) * sizeof(float **));
+	if (NULL == nn->weight)
 		return 1;
-	if (nn->num_layers > 1) {
-		nn->weights[nn->num_layers - 1] = (float **)malloc((nn->widths[nn->num_layers - 1]) * sizeof(float *));
-		if (NULL == nn->weights[nn->num_layers - 1])
+	nn->weight_adj = (float ***)realloc(nn->weight_adj, (nn->depth) * sizeof(float **));
+	if (NULL == nn->weight_adj)
+		return 1;
+	if (nn->depth > 1) {
+		nn->weight[nn->depth - 1] = (float **)malloc((nn->width[nn->depth - 1]) * sizeof(float *));
+		if (NULL == nn->weight[nn->depth - 1])
 			return 1;
-		for (int neuron = 0; neuron < nn->widths[nn->num_layers - 1]; neuron++) {
-			nn->weights[nn->num_layers - 1][neuron] = (float *)malloc((nn->widths[nn->num_layers - 2]) * sizeof(float));
-			if (NULL == nn->weights[nn->num_layers - 1][neuron])
+		nn->weight_adj[nn->depth - 1] = (float **)malloc((nn->width[nn->depth - 1]) * sizeof(float *));
+		if (NULL == nn->weight_adj[nn->depth - 1])
+			return 1;
+		for (int neuron = 0; neuron < nn->width[nn->depth - 1]; neuron++) {
+			nn->weight[nn->depth - 1][neuron] = (float *)malloc((nn->width[nn->depth - 2]) * sizeof(float));
+			if (NULL == nn->weight[nn->depth - 1][neuron])
+				return 1;
+			nn->weight_adj[nn->depth - 1][neuron] = (float *)malloc((nn->width[nn->depth - 2]) * sizeof(float));
+			if (NULL == nn->weight_adj[nn->depth - 1][neuron])
 				return 1;
 			// Randomize the weights in this layer
-			for (int i = 0; i < nn->widths[nn->num_layers - 2]; i++)
-				nn->weights[nn->num_layers - 1][neuron][i] = frand() - 0.5f;
+			for (int i = 0; i < nn->width[nn->depth - 2]; i++)
+				nn->weight[nn->depth - 1][neuron][i] = frand() - 0.5f;
 		}
 	}
 	return 0;
@@ -252,13 +269,13 @@ int nn_save(nn_t *nn, char *path)
 	file = fopen(path, "w");
 	if (NULL == file)
 		return 1;
-	fprintf(file, "%d\n", nn->num_layers);
-	for (i = 0; i < nn->num_layers; i++)
-		fprintf(file, "%d %d %f\n", nn->widths[i], nn->activations[i], nn->biases[i]);
-	for (layer = 1; layer < nn->num_layers; layer++)
-		for (i = 0; i < nn->widths[layer]; i++)
-			for (j = 0; j < nn->widths[layer-1]; j++)
-				fprintf(file, "%f\n", nn->weights[layer][i][j]);
+	fprintf(file, "%d\n", nn->depth);
+	for (i = 0; i < nn->depth; i++)
+		fprintf(file, "%d %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
+	for (layer = 1; layer < nn->depth; layer++)
+		for (i = 0; i < nn->width[layer]; i++)
+			for (j = 0; j < nn->width[layer - 1]; j++)
+				fprintf(file, "%f\n", nn->weight[layer][i][j]);
 	fclose(file);
 	return 0;
 }
@@ -272,14 +289,14 @@ nn_t *nn_load(char *path)
 	int activation = ACTIVATION_FUNCTION_TYPE_NONE;
 	float bias = 0;
 	int layer, i, j;
-	int num_layers;
+	int depth;
 
 	file = fopen(path, "r");
 	if (NULL == file)
 		return NULL;
 	nn = nn_init();
-	fscanf(file, "%d\n", &num_layers);
-	for (i = 0; i < num_layers; i++) {
+	fscanf(file, "%d\n", &depth);
+	for (i = 0; i < depth; i++) {
 		fscanf(file, "%d %d %f\n", &width, &activation, &bias);
 		if (nn_add_layer(nn, width, activation, bias) != 0) {
 			fclose(file);
@@ -287,55 +304,81 @@ nn_t *nn_load(char *path)
 		}
 	}
 	// Read in the weights
-	for (layer = 1; layer < nn->num_layers; layer++)
-		for (i = 0; i < nn->widths[layer]; i++)
-			for (j = 0; j < nn->widths[layer - 1]; j++)
-				fscanf(file, "%f\n", &nn->weights[layer][i][j]);
+	for (layer = 1; layer < nn->depth; layer++)
+		for (i = 0; i < nn->width[layer]; i++)
+			for (j = 0; j < nn->width[layer - 1]; j++)
+				fscanf(file, "%f\n", &nn->weight[layer][i][j]);
 	fclose(file);
 	return nn;
+}
+
+static void forward_propagation(nn_t *nn)
+{
+	float sum;
+	int i, j, k;
+
+	// Calculate neuron values in each layer
+	for (i = 1; i < nn->depth; i++) {
+		for (j = 0; j < nn->width[i]; j++) {
+			sum = 0;
+			for (k = 0; k < nn->width[i - 1]; k++)
+				sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
+			sum += nn->bias[i];
+			nn->neuron[i][j] = activation_functions[nn->activation[i]](sum, false);
+			// Store the preactivation value of this neuron for later use in backpropagation
+			nn->preact[i][j] = sum;
+		}
+	}
 }
 
 // Trains a nn with a given input and target output at a specified learning rate
 // Returns the total error between the target and the output of the neural network
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 {
-	float de, da, sum;
-	int i, j, layer;
+	float sum;
+	int i, j, k;
+	float err = 0;
 
-	nn->neurons[0] = inputs;
+	nn->neuron[0] = inputs;
 	forward_propagation(nn);
-	// Perform back propagation
-	for (i = 0; i < nn->widths[nn->num_layers - 2]; i++) {
-		sum=0;
-		// Backpropagation Reference: Deep Learning Vol. 1, From Basics to Practice
-		// Calculate total error at the output layer
-		for (j = 0; j < nn->widths[nn->num_layers - 1]; j++) {
-			// Derivative of the error
-			de = error_derivative(nn->neurons[nn->num_layers - 1][j], targets[j]);
-			// Derivative of the activation function
-			da = activation_functions[nn->activations[nn->num_layers - 1]](nn->neurons[nn->num_layers - 1][j], true);
-			sum += de * da * nn->weights[nn->num_layers - 1][j][i];
-			// Correct the weights between this layer and the next layer
-			nn->weights[nn->num_layers - 1][j][i] -= rate * de * da * nn->neurons[nn->num_layers - 2][i];
-		}
-		// Correct weights between previous layer and this one
-		for (layer = nn->num_layers - 2; layer > 0; layer--)
-			for (j = 0; j < nn->widths[layer - 1]; j++)
-				nn->weights[layer][i][j] -= rate * (sum + nn->biases[layer]) * activation_functions[nn->activations[layer]](nn->neurons[layer][i], true) * nn->neurons[layer - 1][j];
+	// Perform back propagation. Start at the output layer, and work backward toward the input layer, adjusting weights along the way.
+	// Calculate the error aka loss aka delta at the output
+	// Select last layer (output layer)
+	i = nn->depth - 1;
+	for (j = 0; j < nn->width[i]; j++) {
+		// Calculate the loss between the target and the outputs of the last layer
+		nn->loss[i][j] = targets[j] - nn->neuron[i][j];
+		err += error(targets[j], nn->neuron[i][j]);
 	}
-	// Calculate total error
-	sum = 0;
-	for (i = 0; i < nn->widths[nn->num_layers - 1]; i++)
-		sum += error(targets[i], nn->neurons[nn->num_layers - 1][i]);
-	return sum;
+	// Calculate losses throughout the inner layers, not including layer 0 which can have no loss
+	for (i = nn->depth - 2; i > 0 ; i--) {
+		for (j = 0; j < nn->width[i]; j++) {
+			sum = 0;
+			for (k = 0; k < nn->width[i + 1]; k++)
+				sum += nn->loss[i + 1][k] * activation_functions[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
+			nn->loss[i][j] = sum;
+		}
+	}
+	// Calculate the weight adjustments
+	// The weights cannot be updated while back-propagating, because back propagating each layer depends on the next layer's weights.
+	for (i = nn->depth - 1; i > 0 ; i--)
+		for (j = 0; j < nn->width[i]; j++)
+			for (k = 0; k < nn->width[i - 1]; k++)
+				nn->weight_adj[i][j][k] = nn->loss[i][j] * activation_functions[nn->activation[i]](nn->preact[i][j], true) * nn->neuron[i - 1][k];
+	// Apply the weight adjustments
+	for (i = nn->depth - 1; i > 0 ; i--)
+		for (j = 0; j < nn->width[i]; j++)
+			for (k = 0; k < nn->width[i - 1]; k++)
+				nn->weight[i][j][k] += nn->weight_adj[i][j][k] * rate;
+	return err;
 }
 
 // Returns an output prediction given an input
 float *nn_predict(nn_t *nn, float *inputs)
 {
-	nn->neurons[0] = inputs;
+	nn->neuron[0] = inputs;
 	forward_propagation(nn);
 	// Return a pointer to the output layer
-	return nn->neurons[nn->num_layers - 1];
+	return nn->neuron[nn->depth - 1];
 }
 

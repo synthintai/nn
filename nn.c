@@ -1,6 +1,6 @@
 /*
  * Neural Network library
- * Copyright (c) 2019-2020 Cole Design and Development, LLC
+ * Copyright (c) 2019-2021 Cole Design and Development, LLC
  * https://coledd.com
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -11,7 +11,7 @@
 #include <stdbool.h>
 #include "nn.h"
 
-typedef float (*activation_function_ptr_t)(float a, bool derivative);
+typedef float (*activation_function_t)(float a, bool derivative);
 
 // Null activation function
 static float activation_function_none(float a, bool derivative)
@@ -116,7 +116,7 @@ static float activation_function_tanh_fast(float a, bool derivative)
 }
 
 // These must be in the same order as the enum activation_function_type
-static activation_function_ptr_t activation_functions[] = {
+static activation_function_t activation_function[] = {
 	activation_function_none,
 	activation_function_identity,
 	activation_function_linear,
@@ -324,15 +324,17 @@ static void forward_propagation(nn_t *nn)
 			for (k = 0; k < nn->width[i - 1]; k++)
 				sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
 			sum += nn->bias[i];
-			nn->neuron[i][j] = activation_functions[nn->activation[i]](sum, false);
+			nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
 			// Store the preactivation value of this neuron for later use in backpropagation
 			nn->preact[i][j] = sum;
 		}
 	}
 }
 
-// Trains a nn with a given input and target output at a specified learning rate
-// Returns the total error between the target and the output of the neural network
+// Trains a nn with a given input and target output at a specified learning rate.
+// The rate (or step size) controls how far in the search space to move against the
+// gradient in each iteration of the algorithm.
+// Returns the total error between the target and the output of the neural network.
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 {
 	float sum;
@@ -341,13 +343,16 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 
 	nn->neuron[0] = inputs;
 	forward_propagation(nn);
-	// Perform back propagation. Start at the output layer, and work backward toward the input layer, adjusting weights along the way.
-	// Calculate the error aka loss aka delta at the output
+	// Perform back propagation using gradient descent, which is an optimization algorithm that follows the
+	// negative gradient of the objective function to find the minimum of the function.
+	// Start at the output layer, and work backward toward the input layer, adjusting weights along the way.
+	// Calculate the error aka loss aka delta at the output.
 	// Select last layer (output layer)
 	i = nn->depth - 1;
 	for (j = 0; j < nn->width[i]; j++) {
 		// Calculate the loss between the target and the outputs of the last layer
-		nn->loss[i][j] = targets[j] - nn->neuron[i][j];
+//		nn->loss[i][j] = targets[j] - nn->neuron[i][j];
+		nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]);
 		err += error(targets[j], nn->neuron[i][j]);
 	}
 	// Calculate losses throughout the inner layers, not including layer 0 which can have no loss
@@ -355,7 +360,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 		for (j = 0; j < nn->width[i]; j++) {
 			sum = 0;
 			for (k = 0; k < nn->width[i + 1]; k++)
-				sum += nn->loss[i + 1][k] * activation_functions[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
+				sum += nn->loss[i + 1][k] * activation_function[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
 			nn->loss[i][j] = sum;
 		}
 	}
@@ -364,7 +369,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 	for (i = nn->depth - 1; i > 0 ; i--)
 		for (j = 0; j < nn->width[i]; j++)
 			for (k = 0; k < nn->width[i - 1]; k++)
-				nn->weight_adj[i][j][k] = nn->loss[i][j] * activation_functions[nn->activation[i]](nn->preact[i][j], true) * nn->neuron[i - 1][k];
+				nn->weight_adj[i][j][k] = nn->loss[i][j] * activation_function[nn->activation[i]](nn->preact[i][j], true) * nn->neuron[i - 1][k];
 	// Apply the weight adjustments
 	for (i = nn->depth - 1; i > 0 ; i--)
 		for (j = 0; j < nn->width[i]; j++)

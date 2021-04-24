@@ -1,6 +1,6 @@
 Neural Network library for embedded systems
 
-Copyright (c) 2019-2020 Cole Design and Development, LLC
+Copyright (c) 2019-2021 Cole Design and Development, LLC
 
 https://coledd.com
 
@@ -83,7 +83,7 @@ The model file is saved as an ASCII file of floating-point values. The first lin
 
 ## License
 
-Copyright (c) 2019-2020 Cole Design and Development, LLC. All rights reserved.
+Copyright (c) 2019-2021 Cole Design and Development, LLC. All rights reserved.
 
 Licensed under the [Apache License 2.0](./LICENSE).
 

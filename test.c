@@ -1,6 +1,6 @@
 /*
  * Neural Network library
- * Copyright (c) 2019-2020 Cole Design and Development, LLC
+ * Copyright (c) 2019-2021 Cole Design and Development, LLC
  * https://coledd.com
  * SPDX-License-Identifier: Apache-2.0
  */

@@ -1,6 +1,6 @@
 /*
  * Neural Network library
- * Copyright (c) 2019-2020 Cole Design and Development, LLC
+ * Copyright (c) 2019-2021 Cole Design and Development, LLC
  * https://coledd.com
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -16,7 +16,7 @@ int main(void)
 	// Tunable hyperparameters
 	int num_inputs = 256;
 	int num_outputs = 10;
-	float learning_rate = 0.01f;
+	float learning_rate = 0.1f;
 	float annealing = 1.0f;
 	int epochs = 200;
 	// End of tunable parameters
@@ -32,7 +32,7 @@ int main(void)
 	nn = nn_init();
 	// Construct the neural network, layer by layer
 	nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
-	nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_RELU, 0);
+	nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
 	nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 	// It is critical to shuffle training data to properly train the model
 	shuffle(data);

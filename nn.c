@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <math.h>
 #include <stdbool.h>
 #include "nn.h"
@@ -351,7 +352,6 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 	i = nn->depth - 1;
 	for (j = 0; j < nn->width[i]; j++) {
 		// Calculate the loss between the target and the outputs of the last layer
-//		nn->loss[i][j] = targets[j] - nn->neuron[i][j];
 		nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]);
 		err += error(targets[j], nn->neuron[i][j]);
 	}
@@ -385,5 +385,10 @@ float *nn_predict(nn_t *nn, float *inputs)
 	forward_propagation(nn);
 	// Return a pointer to the output layer
 	return nn->neuron[nn->depth - 1];
+}
+
+uint32_t nn_version(void)
+{
+	return (NN_VERSION_MAJOR << 16) | (NN_VERSION_MINOR << 8) | NN_VERSION_PATCH;
 }
 

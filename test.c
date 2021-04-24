@@ -6,6 +6,7 @@
  */
 
 #include <stdio.h>
+#include <stdint.h>
 #include "nn.h"
 #include "data_prep.h"
 

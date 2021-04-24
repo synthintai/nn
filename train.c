@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <time.h>
 #include "nn.h"
 #include "data_prep.h"
@@ -16,7 +17,7 @@ int main(void)
 	// Tunable hyperparameters
 	int num_inputs = 256;
 	int num_outputs = 10;
-	float learning_rate = 0.1f;
+	float learning_rate = 0.3f;
 	float annealing = 1.0f;
 	int epochs = 200;
 	// End of tunable parameters
@@ -29,11 +30,22 @@ int main(void)
 	// Load sample data into a data structure in memory
 	data = load_data("train.csv", num_inputs, num_outputs);
 	// Initialize a neural network model
-	nn = nn_init();
-	// Construct the neural network, layer by layer
-	nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
-	nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
-	nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
+	nn = nn_load("model.txt");
+	if (NULL == nn) {
+		printf("Creating new model.\n");
+		nn = nn_init();
+		// Construct the neural network, layer by layer
+		nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
+		nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
+		nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
+	} else {
+		printf("Loading existing model.\n");
+		if ((nn->width[0] != num_inputs) || (nn->width[nn->depth - 1] != num_outputs))
+		{
+			printf("Error: Model is a different size.\n");
+			return(1);
+		}
+	}
 	// It is critical to shuffle training data to properly train the model
 	shuffle(data);
 	printf("error\tlearning_rate\n");

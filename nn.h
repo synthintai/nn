@@ -8,6 +8,11 @@
 #ifndef NN_H
 #define NN_H
 
+// NN API Version
+#define NN_VERSION_MAJOR	0
+#define NN_VERSION_MINOR	1
+#define NN_VERSION_PATCH	0
+
 typedef enum activation_function_type {
 	ACTIVATION_FUNCTION_TYPE_NONE = 0,
 	ACTIVATION_FUNCTION_TYPE_IDENTITY,
@@ -24,9 +29,9 @@ typedef enum activation_function_type {
 
 typedef struct nn {
 	int depth;			// Number of layers, including the input and the output layers
-	int *width;			// Number of neurons in each layer
-	int *activation;	// Activation function used for each layer
-	float *bias;		// Biases by layer
+	int *width;			// Number of neurons in each layer (can vary from layer to layer)
+	int *activation;	// Activation function used for each layer (can be different for each layer)
+	float *bias;		// Biases by layer (each layer can have its own bias)
 	float **neuron;		// Output value for each neuron in each layer
 	float **loss;		// Error derivative for each neuron in each layer
 	float **preact;		// Neuron values before activation function is applied for each neuron in each layer
@@ -41,6 +46,7 @@ int nn_save(nn_t *nn, char *path);
 nn_t *nn_load(char *path);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);
+uint32_t nn_version(void);
 
 #endif /* NN_H */
 

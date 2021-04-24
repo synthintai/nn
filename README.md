@@ -81,6 +81,10 @@ https://www.youtube.com/watch?v=cqjwSkrGtww
 
 The model file is saved as an ASCII file of floating-point values. The first line depicts the number of layers, inclusive of the input and output layers. The construct of each of those layers comprises the next set of lines, one line for each layer. The format of each line is width (in neurons), activation function, and bias. The remaining lines are the weights of each neuron in each layer, for all layers. Since there are no weights associated with the neurons in the input layer, these are skipped, and do not exist in the model file.
 
+## Integration
+
+To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference.
+
 ## License
 
 Copyright (c) 2019-2021 Cole Design and Development, LLC. All rights reserved.

@@ -17,7 +17,7 @@ int main(void)
 	// Tunable hyperparameters
 	int num_inputs = 256;
 	int num_outputs = 10;
-	float learning_rate = 0.3f;
+	float learning_rate = 0.1f;
 	float annealing = 1.0f;
 	int epochs = 200;
 	// End of tunable parameters

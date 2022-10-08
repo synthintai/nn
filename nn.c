@@ -360,12 +360,13 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 		for (j = 0; j < nn->width[i]; j++) {
 			sum = 0;
 			for (k = 0; k < nn->width[i + 1]; k++)
-				sum += nn->loss[i + 1][k] * activation_function[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
+				sum += nn->loss[i + 1][k] * activation_function[nn->activation[i]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
 			nn->loss[i][j] = sum;
 		}
 	}
 	// Calculate the weight adjustments
 	// The weights cannot be updated while back-propagating, because back propagating each layer depends on the next layer's weights.
+	// So we save the weight adjustments in a temporary array and apply them all at once later.	
 	for (i = nn->depth - 1; i > 0 ; i--)
 		for (j = 0; j < nn->width[i]; j++)
 			for (k = 0; k < nn->width[i - 1]; k++)

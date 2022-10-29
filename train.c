@@ -17,9 +17,9 @@ int main(void)
 	// Tunable hyperparameters
 	int num_inputs = 256;
 	int num_outputs = 10;
-	float learning_rate = 0.1f;
+	float learning_rate = 0.01f;
 	float annealing = 1.0f;
-	int epochs = 200;
+	int epochs = 1000;
 	// End of tunable parameters
 	data_t *data;
 	nn_t *nn;
@@ -37,6 +37,7 @@ int main(void)
 		// Construct the neural network, layer by layer
 		nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
 		nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
+		nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
 		nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 	} else {
 		printf("Loading existing model.\n");
@@ -46,18 +47,20 @@ int main(void)
 			return(1);
 		}
 	}
-	// It is critical to shuffle training data to properly train the model
-	shuffle(data);
-	printf("error\tlearning_rate\n");
+	printf("train error, test error, learning_rate\n");
 	for (i = 0; i < epochs; i++) {
 		float error = 0.0f;
+		// It is critical to shuffle training data before each epoch to properly train the model
+		shuffle(data);
 		for (j = 0; j < data->num_rows; j++) {
 			float *input = data->input[j];
 			float *target = data->target[j];
 			error += nn_train(nn, input, target, learning_rate);
 		}
-		printf("%.5f\t%.5f\n", error / data->num_rows, learning_rate);
+		printf("%.5f,%.5f,%.5f\n", 0.0, error / data->num_rows, learning_rate);
 		learning_rate *= annealing;
+		// Incremental save
+		nn_save(nn, "model.txt");
 	}
 	// Save the neural network architecture and weights to a file so that it can be used later
 	nn_save(nn, "model.txt");

@@ -1,6 +1,6 @@
 Neural Network library for embedded systems
 
-Copyright (c) 2019-2021 Cole Design and Development, LLC
+Copyright (c) 2019-2022 Cole Design and Development, LLC
 
 https://coledd.com
 

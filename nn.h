@@ -12,6 +12,7 @@
 #define NN_VERSION_MAJOR	0
 #define NN_VERSION_MINOR	1
 #define NN_VERSION_PATCH	0
+#define NN_VERSION_BUILD	0
 
 typedef enum activation_function_type {
 	ACTIVATION_FUNCTION_TYPE_NONE = 0,

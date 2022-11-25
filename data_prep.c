@@ -61,7 +61,7 @@ data_t *data_init(int num_rows, int num_inputs, int num_outputs)
 }
 
 // Splits inputs and outputs into two separate data tables within the data structure
-void parse(data_t *data, char *line, int row)
+void data_parse(data_t *data, char *line, int row)
 {
 	for (int column = 0; column < (data->num_inputs + data->num_outputs); column++) {
 		float val = atof(strtok(column == 0 ? line : NULL, ","));
@@ -73,7 +73,7 @@ void parse(data_t *data, char *line, int row)
 }
 
 // Returns the number of lines in a file
-int num_lines(FILE *file)
+int data_num_lines(FILE *file)
 {
 	int lines = 0;
 	int c = EOF;
@@ -91,7 +91,7 @@ int num_lines(FILE *file)
 }
 
 // Parses file from path getting all inputs and outputs for the neural network. Returns the data in a data structure.
-data_t *load_data(char *path, int num_inputs, int num_outputs)
+data_t *data_load(char *path, int num_inputs, int num_outputs)
 {
 	int row;
 	FILE *file;
@@ -105,7 +105,7 @@ data_t *load_data(char *path, int num_inputs, int num_outputs)
 		printf("Error: Could not open %s\n", path);
 		return NULL;
 	}
-	num_rows = num_lines(file);
+	num_rows = data_num_lines(file);
 	data = data_init(num_rows, num_inputs, num_outputs);
 	if (NULL == data) {
 		fclose(file);
@@ -113,7 +113,7 @@ data_t *load_data(char *path, int num_inputs, int num_outputs)
 	}
 	row = 0;
 	while (getline(&line, &len, file) != -1)
-		parse(data, line, row++);
+		data_parse(data, line, row++);
 	free(line);
 	fclose(file);
 	return data;
@@ -132,7 +132,7 @@ void data_free(data_t *data)
 }
 
 // Randomly shuffles the rows of a data object
-void shuffle(data_t *data)
+void data_shuffle(data_t *data)
 {
 	float *input, *output;
 

@@ -15,9 +15,9 @@ typedef struct {
 } data_t;
 
 data_t *data_init(int num_rows, int num_inputs, int num_outputs);
-void parse(data_t *data, char *line, int row);
-int num_lines(FILE *file);
-data_t *load_data(char *path, int num_inputs, int num_outputs);
+void data_parse(data_t *data, char *line, int row);
+int data_num_lines(FILE *file);
+data_t *data_load(char *path, int num_inputs, int num_outputs);
 void data_free(data_t *data);
-void shuffle(data_t *data);
+void data_shuffle(data_t *data);
 

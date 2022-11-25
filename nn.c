@@ -12,6 +12,8 @@
 #include <stdbool.h>
 #include "nn.h"
 
+// Private functions
+
 typedef float (*activation_function_t)(float a, bool derivative);
 
 // Null activation function
@@ -149,6 +151,27 @@ static float error_derivative(float a, float b)
 	return a - b;
 }
 
+static void forward_propagation(nn_t *nn)
+{
+	float sum;
+	int i, j, k;
+
+	// Calculate neuron values in each layer
+	for (i = 1; i < nn->depth; i++) {
+		for (j = 0; j < nn->width[i]; j++) {
+			sum = 0;
+			for (k = 0; k < nn->width[i - 1]; k++)
+				sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
+			sum += nn->bias[i];
+			nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
+			// Store the preactivation value of this neuron for later use in backpropagation
+			nn->preact[i][j] = sum;
+		}
+	}
+}
+
+// Public functions
+
 nn_t *nn_init(void)
 {
 	nn_t *nn;
@@ -261,77 +284,6 @@ int nn_add_layer(nn_t *nn, int width, int activation, float bias)
 	return 0;
 }
 
-// Saves a neural net model file
-int nn_save(nn_t *nn, char *path)
-{
-	int layer, i, j;
-	FILE *file;
-
-	file = fopen(path, "w");
-	if (NULL == file)
-		return 1;
-	fprintf(file, "%d\n", nn->depth);
-	for (i = 0; i < nn->depth; i++)
-		fprintf(file, "%d %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
-	for (layer = 1; layer < nn->depth; layer++)
-		for (i = 0; i < nn->width[layer]; i++)
-			for (j = 0; j < nn->width[layer - 1]; j++)
-				fprintf(file, "%f\n", nn->weight[layer][i][j]);
-	fclose(file);
-	return 0;
-}
-
-// Loads a neural net model file
-nn_t *nn_load(char *path)
-{
-	FILE *file;
-	nn_t *nn;
-	int width = 0;
-	int activation = ACTIVATION_FUNCTION_TYPE_NONE;
-	float bias = 0;
-	int layer, i, j;
-	int depth;
-
-	file = fopen(path, "r");
-	if (NULL == file)
-		return NULL;
-	nn = nn_init();
-	fscanf(file, "%d\n", &depth);
-	for (i = 0; i < depth; i++) {
-		fscanf(file, "%d %d %f\n", &width, &activation, &bias);
-		if (nn_add_layer(nn, width, activation, bias) != 0) {
-			fclose(file);
-			return NULL;
-		}
-	}
-	// Read in the weights
-	for (layer = 1; layer < nn->depth; layer++)
-		for (i = 0; i < nn->width[layer]; i++)
-			for (j = 0; j < nn->width[layer - 1]; j++)
-				fscanf(file, "%f\n", &nn->weight[layer][i][j]);
-	fclose(file);
-	return nn;
-}
-
-static void forward_propagation(nn_t *nn)
-{
-	float sum;
-	int i, j, k;
-
-	// Calculate neuron values in each layer
-	for (i = 1; i < nn->depth; i++) {
-		for (j = 0; j < nn->width[i]; j++) {
-			sum = 0;
-			for (k = 0; k < nn->width[i - 1]; k++)
-				sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
-			sum += nn->bias[i];
-			nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
-			// Store the preactivation value of this neuron for later use in backpropagation
-			nn->preact[i][j] = sum;
-		}
-	}
-}
-
 // Trains a nn with a given input and target output at a specified learning rate.
 // The rate (or step size) controls how far in the search space to move against the
 // gradient in each iteration of the algorithm.
@@ -388,8 +340,60 @@ float *nn_predict(nn_t *nn, float *inputs)
 	return nn->neuron[nn->depth - 1];
 }
 
+// Loads a neural net model file
+nn_t *nn_load(char *path)
+{
+	FILE *file;
+	nn_t *nn;
+	int width = 0;
+	int activation = ACTIVATION_FUNCTION_TYPE_NONE;
+	float bias = 0;
+	int layer, i, j;
+	int depth;
+
+	file = fopen(path, "r");
+	if (NULL == file)
+		return NULL;
+	nn = nn_init();
+	fscanf(file, "%d\n", &depth);
+	for (i = 0; i < depth; i++) {
+		fscanf(file, "%d %d %f\n", &width, &activation, &bias);
+		if (nn_add_layer(nn, width, activation, bias) != 0) {
+			fclose(file);
+			return NULL;
+		}
+	}
+	// Read in the weights
+	for (layer = 1; layer < nn->depth; layer++)
+		for (i = 0; i < nn->width[layer]; i++)
+			for (j = 0; j < nn->width[layer - 1]; j++)
+				fscanf(file, "%f\n", &nn->weight[layer][i][j]);
+	fclose(file);
+	return nn;
+}
+
+// Saves a neural net model file
+int nn_save(nn_t *nn, char *path)
+{
+	int layer, i, j;
+	FILE *file;
+
+	file = fopen(path, "w");
+	if (NULL == file)
+		return 1;
+	fprintf(file, "%d\n", nn->depth);
+	for (i = 0; i < nn->depth; i++)
+		fprintf(file, "%d %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
+	for (layer = 1; layer < nn->depth; layer++)
+		for (i = 0; i < nn->width[layer]; i++)
+			for (j = 0; j < nn->width[layer - 1]; j++)
+				fprintf(file, "%f\n", nn->weight[layer][i][j]);
+	fclose(file);
+	return 0;
+}
+
 uint32_t nn_version(void)
 {
-	return (NN_VERSION_MAJOR << 16) | (NN_VERSION_MINOR << 8) | NN_VERSION_PATCH;
+	return (NN_VERSION_MAJOR << 24) | (NN_VERSION_MINOR << 16) | (NN_VERSION_PATCH << 8) | NN_VERSION_BUILD;
 }
 

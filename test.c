@@ -25,7 +25,7 @@ int main(void)
 		return 1;
 	}
 	// Load training data into a data structure in memory
-	data = load_data("train.csv", model->width[0], model->width[model->depth - 1]);
+	data = data_load("train.csv", model->width[0], model->width[model->depth - 1]);
 	num_samples = 0;
 	true_positive = 0;
 	for (int i = 0; i < data->num_rows; i++) {
@@ -40,7 +40,7 @@ int main(void)
 	printf("Train: %d/%d = %2.2f%%\n", true_positive, num_samples, (true_positive * 100.0) / num_samples);
 	data_free(data);
 	// Load unseen data into a data structure in memory
-	data = load_data("test.csv", model->width[0], model->width[model->depth - 1]);
+	data = data_load("test.csv", model->width[0], model->width[model->depth - 1]);
 	num_samples = 0;
 	true_positive = 0;
 	for (int i = 0; i < data->num_rows; i++) {

@@ -28,7 +28,7 @@ int main(void)
 	// Set the random seed
 	srand(time(0));
 	// Load sample data into a data structure in memory
-	data = load_data("train.csv", num_inputs, num_outputs);
+	data = data_load("train.csv", num_inputs, num_outputs);
 	// Initialize a neural network model
 	nn = nn_load("model.txt");
 	if (NULL == nn) {
@@ -51,7 +51,7 @@ int main(void)
 	for (i = 0; i < epochs; i++) {
 		float error = 0.0f;
 		// It is critical to shuffle training data before each epoch to properly train the model
-		shuffle(data);
+		data_shuffle(data);
 		for (j = 0; j < data->num_rows; j++) {
 			float *input = data->input[j];
 			float *target = data->target[j];

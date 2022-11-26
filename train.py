@@ -5,12 +5,8 @@
 # https://coledd.com
 # SPDX-License-Identifier: Apache-2.0
 
-import ctypes
-from ctypes import CDLL
-from enum import Enum
-import sys
-from nn import Nn
 import random
+from nn import Nn
 
 a = Nn()
 a.version()
@@ -21,7 +17,7 @@ a.add_layer(10, Nn.ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 
 data = a.data_load('train.csv', a.model.contents.width[0], a.model.contents.width[a.model.contents.depth-1])
 for j in range(1000):
-	random.shuffle(data)
+	data=random.sample(data, len(data))
 	for line in data:
 		a.train(line[:a.model.contents.width[0]], line[a.model.contents.width[0]:], 0.01)
 

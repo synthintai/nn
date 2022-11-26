@@ -30,5 +30,5 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	rm -f data_prep.o nn.o libnn.so train test predict model.txt tags nn.png README.pdf
-
+	$(RM) data_prep.o nn.o libnn.so train test predict model.txt tags nn.png README.pdf
+	$(RM) -r __pycache__

@@ -33,8 +33,8 @@ int main(void)
 		// Make an output prediction based upon new input data
 		prediction = nn_predict(model, data->input[i]);
 		for (int j = 0; j < model->width[model->depth - 1]; j++)
-			if (data->target[i][j] > 0.5)
-				if (prediction[j] > 0.5)
+			if (data->target[i][j] >= 0.5)
+				if (prediction[j] >= 0.5)
 					true_positive++;
 	}
 	printf("Train: %d/%d = %2.2f%%\n", true_positive, num_samples, (true_positive * 100.0) / num_samples);
@@ -48,8 +48,8 @@ int main(void)
 		// Make an output prediction based upon new input data
 		prediction = nn_predict(model, data->input[i]);
 		for (int j = 0; j < model->width[model->depth - 1]; j++)
-			if (data->target[i][j] > 0.5)
-				if (prediction[j] > 0.5)
+			if (data->target[i][j] >= 0.5)
+				if (prediction[j] >= 0.5)
 					true_positive++;
 	}
 	printf("Test: %d/%d = %2.2f%%\n", true_positive, num_samples, (true_positive * 100.0) / num_samples);

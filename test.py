@@ -5,9 +5,6 @@
 # https://coledd.com
 # SPDX-License-Identifier: Apache-2.0
 
-import ctypes
-from ctypes import CDLL
-from enum import Enum
 import sys
 from nn import Nn
 

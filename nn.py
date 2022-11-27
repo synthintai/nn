@@ -12,17 +12,18 @@ import sys
 
 class Nn:
 
-	ACTIVATION_FUNCTION_TYPE_NONE = 		0
-	ACTIVATION_FUNCTION_TYPE_IDENTITY =		1
-	ACTIVATION_FUNCTION_TYPE_LINEAR =		2
-	ACTIVATION_FUNCTION_TYPE_RELU =			3
-	ACTIVATION_FUNCTION_TYPE_LEAKY_RELU =	4
-	ACTIVATION_FUNCTION_TYPE_ELU =			5
-	ACTIVATION_FUNCTION_TYPE_THRESHOLD =	6
-	ACTIVATION_FUNCTION_TYPE_SIGMOID =		7
-	ACTIVATION_FUNCTION_TYPE_SIGMOID_FAST =	8
-	ACTIVATION_FUNCTION_TYPE_TANH =			9
-	ACTIVATION_FUNCTION_TYPE_TANH_FAST =	10
+	class ActivationFunctionType(Enum):
+		NONE = 			0
+		IDENTITY =		1
+		LINEAR =		2
+		RELU =			3
+		LEAKY_RELU =	4
+		ELU =			5
+		THRESHOLD =		6
+		SIGMOID =		7
+		SIGMOID_FAST =	8
+		TANH =			9
+		TANH_FAST =		10
 
 	class struct_nn(ctypes.Structure):
 		__slots__ = ['depth', 'width', 'activation', 'bias', 'neuron', 'loss', 'preact', 'weight', 'weight_adj']
@@ -132,4 +133,9 @@ class Nn:
 				print('Error in training data format')
 			fb.append(fa)
 		return fb
+
+	def summary(self):
+		print(f'Layer	Type	Width	Actvation	Bias')
+		for i in range(self.model.contents.depth):
+			print(f'{i}\tdense\t{self.model.contents.width[i]}\t{self.ActivationFunctionType(self.model.contents.activation[i]).name}\t{self.model.contents.bias[i]}')
 

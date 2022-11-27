@@ -10,10 +10,10 @@ from nn import Nn
 
 a = Nn()
 a.version()
-a.add_layer(256, Nn.ACTIVATION_FUNCTION_TYPE_NONE, 0);
-a.add_layer(40, Nn.ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
-a.add_layer(40, Nn.ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
-a.add_layer(10, Nn.ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
+a.add_layer(256, Nn.ActivationFunctionType.NONE.value, 0);
+a.add_layer(40, Nn.ActivationFunctionType.LEAKY_RELU.value, 0);
+a.add_layer(40, Nn.ActivationFunctionType.LEAKY_RELU.value, 0);
+a.add_layer(10, Nn.ActivationFunctionType.SIGMOID.value, 0);
 
 data = a.data_load('train.csv', a.model.contents.width[0], a.model.contents.width[a.model.contents.depth-1])
 for j in range(1000):

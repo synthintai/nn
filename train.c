@@ -1,7 +1,7 @@
 /*
  * Neural Network library
- * Copyright (c) 2019-2022 Cole Design and Development, LLC
- * https://coledd.com
+ * Copyright (c) 2019-2024 SynthInt Technologies, LLC
+ * https://synthint.ai
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -19,7 +19,7 @@ int main(void)
 	int num_outputs = 10;
 	float learning_rate = 0.01f;
 	float annealing = 1.0f;
-	int epochs = 1000;
+	int epochs = 10000;
 	// End of tunable parameters
 	data_t *data;
 	nn_t *nn;

@@ -1,4 +1,4 @@
-all:	train test predict README.pdf libnn.so
+all:	train test predict libnn.so
 
 libnn.so: nn.o data_prep.o
 	$(RM) $@
@@ -20,9 +20,6 @@ test: test.c nn.o data_prep.o
 predict: predict.c nn.o
 	$(CC) -Wall predict.c nn.o -o predict -lm -march=native -Ofast
 
-README.pdf: README.md
-	pandoc README.md -o README.pdf
-
 tags:
 	ctags -R *
 
@@ -30,5 +27,5 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o libnn.so train test predict model.txt tags nn.png README.pdf
+	$(RM) data_prep.o nn.o libnn.so train test predict model.txt tags nn.png
 	$(RM) -r __pycache__

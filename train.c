@@ -17,7 +17,7 @@ int main(void)
 	// Tunable hyperparameters
 	int num_inputs = 256;
 	int num_outputs = 10;
-	float learning_rate = 0.01f;
+	float learning_rate = 0.02f;
 	float annealing = 1.0f;
 	int epochs = 10000;
 	// End of tunable parameters
@@ -36,8 +36,8 @@ int main(void)
 		nn = nn_init();
 		// Construct the neural network, layer by layer
 		nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
-		nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
-		nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
+		nn_add_layer(nn, 100, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
+		nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
 		nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 	} else {
 		printf("Loading existing model.\n");

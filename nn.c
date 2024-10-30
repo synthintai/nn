@@ -133,12 +133,6 @@ static activation_function_t activation_function[] = {
 	activation_function_tanh_fast
 };
 
-// Returns floating point random number between 0 and 1
-static float frand(void)
-{
-	return rand() / (float)RAND_MAX;
-}
-
 // Computes the error given a cost function
 static float error(float a, float b)
 {
@@ -276,9 +270,11 @@ int nn_add_layer(nn_t *nn, int width, int activation, float bias)
 			nn->weight_adj[nn->depth - 1][neuron] = (float *)malloc((nn->width[nn->depth - 2]) * sizeof(float));
 			if (NULL == nn->weight_adj[nn->depth - 1][neuron])
 				return 1;
-			// Randomize the weights in this layer
-			for (int i = 0; i < nn->width[nn->depth - 2]; i++)
-				nn->weight[nn->depth - 1][neuron][i] = frand() - 0.5f;
+			// Randomize the weights in this layer using uniform Xavier initialization
+			// Range = +/- sqrt(6 / (#inputs + #outputs))
+			for (int i = 0; i < nn->width[nn->depth - 2]; i++) {
+				nn->weight[nn->depth - 1][neuron][i] = sqrtf(6.0f / (nn->width[nn->depth - 1] + nn->width[nn->depth - 2])) * 2.0f * (rand() / (float)RAND_MAX - 0.5f);
+			}
 		}
 	}
 	return 0;

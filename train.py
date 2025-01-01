@@ -10,7 +10,7 @@ from nn import Nn
 
 TARGET_TRAIN_ERROR = 0.01
 
-# epochs = 10
+epochs = 0
 train_error = 1.0
 
 # Initialize a neural network model
@@ -31,7 +31,6 @@ data = a.data_load('train.csv', a.model.contents.width[0], a.model.contents.widt
 learning_rate = 0.02
 
 print("train error, learning_rate")
-# for j in range(epochs):
 while train_error > TARGET_TRAIN_ERROR:
 	total_error = 0.0
 	data = random.sample(data, len(data))
@@ -39,7 +38,10 @@ while train_error > TARGET_TRAIN_ERROR:
 		inputs = line[:a.model.contents.width[0]]
 		targets = line[a.model.contents.width[0]:]
 		total_error += a.train(inputs, targets, learning_rate)
+	epochs = epochs + 1
 	train_error = total_error / len(data)
-	print(f"{train_error:.5f},{learning_rate:.5f}")
+	print(f"{train_error:.5f}, {learning_rate:.5f}")
 	# Incremental saving of the neural network architecture and weights to a file so that it can be used later
 	a.save('model.txt')
+print(f"Final train error: {train_error:.5f}")
+print(f"Training epochs: {epochs}")

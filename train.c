@@ -21,11 +21,10 @@ int main(void)
 	int num_outputs = 10;
 	float learning_rate = 0.02f;
 	float annealing = 1.0f;
-//	int epochs = 10000;
+	int epochs = 0;
 	// End of tunable parameters
 	data_t *data;
 	nn_t *nn;
-//	int i;
 	int j;
 	float train_error = 1.0f;
 
@@ -52,7 +51,6 @@ int main(void)
 		}
 	}
 	printf("train error, learning_rate\n");
-//	for (i = 0; i < epochs; i++) {
 	while (train_error > TARGET_TRAIN_ERROR) {
 		float total_error = 0.0f;
 		// It is critical to shuffle training data before each epoch to properly train the model
@@ -62,6 +60,7 @@ int main(void)
 			float *target = data->target[j];
 			total_error += nn_train(nn, input, target, learning_rate);
 		}
+		epochs++;
 		train_error = total_error / data->num_rows;
 		printf("%.5f, %.5f\n", train_error, learning_rate);
 		learning_rate *= annealing;
@@ -71,6 +70,8 @@ int main(void)
 	}
 	data_free(data);
 	nn_free(nn);
+	printf("Final train error: %f\n", train_error);
+	printf("Training epochs: %d\n", epochs);
 	return 0;
 }
 

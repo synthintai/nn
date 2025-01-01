@@ -105,7 +105,7 @@ class Nn:
 
 	def load(self, path):
 		path_c = ctypes.c_char_p(path.encode('utf-8'))
-		self.free_c(self.model)
+#		self.free_c(self.model)
 		self.model = self.load_c(path_c)
 
 	def save(self, path):
@@ -138,4 +138,3 @@ class Nn:
 		print(f'Layer	Type	Width	Actvation	Bias')
 		for i in range(self.model.contents.depth):
 			print(f'{i}\tdense\t{self.model.contents.width[i]}\t{self.ActivationFunctionType(self.model.contents.activation[i]).name}\t{self.model.contents.bias[i]}')
-

@@ -1,4 +1,4 @@
-all:	train test predict libnn.so info
+all:	train test predict summary libnn.so
 
 CFLAGS=-g # -Ofast
 
@@ -22,8 +22,8 @@ test: test.c nn.o data_prep.o
 predict: predict.c nn.o
 	$(CC) -Wall predict.c nn.o -o predict -lm -march=native $(CFLAGS)
 
-info: info.c nn.o
-	$(CC) -Wall info.c nn.o -o info -lm -march=native $(CFLAGS)
+summary: summary.c nn.o
+	$(CC) -Wall summary.c nn.o -o summary -lm -march=native $(CFLAGS)
 
 tags:
 	ctags -R *
@@ -32,5 +32,5 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o libnn.so train test predict model.txt tags nn.png info
+	$(RM) data_prep.o nn.o libnn.so train test predict summary model.txt tags nn.png
 	$(RM) -r __pycache__

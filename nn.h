@@ -10,7 +10,7 @@
 
 // NN API Version
 #define NN_VERSION_MAJOR	0
-#define NN_VERSION_MINOR	1
+#define NN_VERSION_MINOR	2
 #define NN_VERSION_PATCH	0
 #define NN_VERSION_BUILD	0
 
@@ -50,4 +50,3 @@ float *nn_predict(nn_t *nn, float *inputs);
 uint32_t nn_version(void);
 
 #endif /* NN_H */
-

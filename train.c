@@ -12,6 +12,8 @@
 #include "nn.h"
 #include "data_prep.h"
 
+#define TARGET_TRAIN_ERROR	0.01
+
 int main(void)
 {
 	// Tunable hyperparameters
@@ -19,11 +21,13 @@ int main(void)
 	int num_outputs = 10;
 	float learning_rate = 0.02f;
 	float annealing = 1.0f;
-	int epochs = 10000;
+//	int epochs = 10000;
 	// End of tunable parameters
 	data_t *data;
 	nn_t *nn;
-	int i, j;
+//	int i;
+	int j;
+	float train_error = 1.0f;
 
 	// Set the random seed
 	srand(time(0));
@@ -40,7 +44,7 @@ int main(void)
 		nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
 		nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 	} else {
-		printf("Loading existing model.\n");
+		printf("Using existing model file\n");
 		if ((nn->width[0] != num_inputs) || (nn->width[nn->depth - 1] != num_outputs))
 		{
 			printf("Error: Model is a different size.\n");
@@ -48,16 +52,18 @@ int main(void)
 		}
 	}
 	printf("train error, learning_rate\n");
-	for (i = 0; i < epochs; i++) {
-		float error = 0.0f;
+//	for (i = 0; i < epochs; i++) {
+	while (train_error > TARGET_TRAIN_ERROR) {
+		float total_error = 0.0f;
 		// It is critical to shuffle training data before each epoch to properly train the model
 		data_shuffle(data);
 		for (j = 0; j < data->num_rows; j++) {
 			float *input = data->input[j];
 			float *target = data->target[j];
-			error += nn_train(nn, input, target, learning_rate);
+			total_error += nn_train(nn, input, target, learning_rate);
 		}
-		printf("%.5f,%.5f\n", error / data->num_rows, learning_rate);
+		train_error = total_error / data->num_rows;
+		printf("%.5f, %.5f\n", train_error, learning_rate);
 		learning_rate *= annealing;
 		// Incremental save
 		// Incremental saving of the neural network architecture and weights to a file so that it can be used later

@@ -392,4 +392,3 @@ uint32_t nn_version(void)
 {
 	return (NN_VERSION_MAJOR << 24) | (NN_VERSION_MINOR << 16) | (NN_VERSION_PATCH << 8) | NN_VERSION_BUILD;
 }
-

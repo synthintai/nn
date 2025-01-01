@@ -148,4 +148,3 @@ void data_shuffle(data_t *data)
 		data->input[j] = input;
 	}
 }
-

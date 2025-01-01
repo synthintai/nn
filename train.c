@@ -47,7 +47,7 @@ int main(void)
 			return(1);
 		}
 	}
-	printf("train error, test error, learning_rate\n");
+	printf("train error, learning_rate\n");
 	for (i = 0; i < epochs; i++) {
 		float error = 0.0f;
 		// It is critical to shuffle training data before each epoch to properly train the model
@@ -57,13 +57,12 @@ int main(void)
 			float *target = data->target[j];
 			error += nn_train(nn, input, target, learning_rate);
 		}
-		printf("%.5f,%.5f,%.5f\n", 0.0, error / data->num_rows, learning_rate);
+		printf("%.5f,%.5f\n", error / data->num_rows, learning_rate);
 		learning_rate *= annealing;
 		// Incremental save
+		// Incremental saving of the neural network architecture and weights to a file so that it can be used later
 		nn_save(nn, "model.txt");
 	}
-	// Save the neural network architecture and weights to a file so that it can be used later
-	nn_save(nn, "model.txt");
 	data_free(data);
 	nn_free(nn);
 	return 0;

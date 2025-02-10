@@ -1,6 +1,6 @@
 Neural Network library for embedded systems
 
-Copyright (c) 2019-2024 SynthInt Technologies, LLC
+Copyright (c) 2019-2025 SynthInt Technologies, LLC
 
 https://synthint.ai
 
@@ -87,7 +87,7 @@ To use this nn library in your own embedded system, it is only necessary to pull
 
 ## License
 
-Copyright (c) 2019-2024 SynthInt Technologies, LLC. All rights reserved.
+Copyright (c) 2019-2025 SynthInt Technologies, LLC. All rights reserved.
 
 Licensed under the [Apache License 2.0](./LICENSE).
 

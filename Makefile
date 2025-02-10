@@ -1,29 +1,30 @@
 all:	train test predict summary libnn.so
 
-CFLAGS=-g # -Ofast
+CFLAGS=-Wall -Ofast -march=native -flto -fPIC
+LDFLAGS=-lm
 
 libnn.so: nn.o data_prep.o
 	$(RM) $@
-	$(AR) rcs $@ nn.o data_prep.o
-	$(CC) -shared -Wl,-o libnn.so *.o
+	$(AR) rcs $@ $^
+	$(CC) -shared -Wl,-soname,libnn.so -o $@ $^
 
 data_prep.o: data_prep.c data_prep.h
-	$(CC) -Wall data_prep.c -c -march=native -flto $(CFLAGS) -fPIC
+	$(CC) $(CFLAGS) -c $<
 
 nn.o: nn.c nn.h
-	$(CC) -Wall nn.c -c -march=native -flto $(CFLAGS) -fPIC
+	$(CC) $(CFLAGS) -c $<
 
 train: train.c nn.o data_prep.o
-	$(CC) -Wall train.c data_prep.o nn.o -o train -lm -march=native $(CFLAGS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 test: test.c nn.o data_prep.o
-	$(CC) -Wall test.c data_prep.o nn.o -o test -lm -march=native $(CFLAGS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 predict: predict.c nn.o
-	$(CC) -Wall predict.c nn.o -o predict -lm -march=native $(CFLAGS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 summary: summary.c nn.o
-	$(CC) -Wall summary.c nn.o -o summary -lm -march=native $(CFLAGS)
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 tags:
 	ctags -R *

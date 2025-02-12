@@ -4,7 +4,6 @@
 #include <math.h>
 #include <stdint.h>
 #include "nn.h"
-#include "quantize.h"
 
 void print_usage() {
     printf("Usage: quantize <input_model> <output_model>\n");
@@ -30,11 +29,7 @@ static int8_t quantize_value(float value, float scale, float zero_point) {
     return (int8_t)round(quantized);
 }
 
-nn_quantized_t* nn_quantize(nn_t* network, quantization_method_t method, int bit_depth) {
-    if (!network || bit_depth != 8) {  // Currently only supporting 8-bit quantization
-        return NULL;
-    }
-
+nn_quantized_t* nn_quantize(nn_t* network) {
     nn_quantized_t* quantized = malloc(sizeof(nn_quantized_t));
     if (!quantized) return NULL;
 
@@ -150,7 +145,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Quantize the network (using symmetric 8-bit quantization)
-    nn_quantized_t* quantized = nn_quantize(network, QUANTIZATION_METHOD_SYMMETRIC, 8);
+    nn_quantized_t* quantized = nn_quantize(network);
     if (!quantized) {
         fprintf(stderr, "Failed to quantize network\n");
         nn_free(network);

@@ -9,7 +9,6 @@
 #include <stdint.h>
 #include "nn.h"
 #include "data_prep.h"
-#include "quantize.h"
 
 int main(void) {
 	nn_quantized_t *qmodel = NULL;

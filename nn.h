@@ -40,13 +40,24 @@ typedef struct nn {
 	float ***weight_adj;// Adjustment of each weight for each neuron in each layer
 } nn_t;
 
+typedef struct {
+	nn_t* original_network;
+	int8_t*** quantized_weights;
+	float** weight_scales;
+	int8_t** quantized_biases;
+	float* bias_scales;
+} nn_quantized_t;
+
 nn_t *nn_init(void);
 void nn_free(nn_t *nn);
+void nn_free_quantized(nn_quantized_t* quantized_network);
 int nn_add_layer(nn_t *nn, int width, int activation, float bias);
 int nn_save(nn_t *nn, char *path);
 nn_t *nn_load(char *path);
+nn_quantized_t* nn_load_quantized(const char* path);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);
+float activate(float value, int activation_type);
 uint32_t nn_version(void);
 
 #endif /* NN_H */

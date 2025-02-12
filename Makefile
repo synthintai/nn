@@ -1,4 +1,4 @@
-all:	train test predict summary libnn.so
+all:	train test test_quantized predict quantize summary libnn.so
 
 CFLAGS=-Wall -Ofast -march=native -flto -fPIC
 LDFLAGS=-lm
@@ -20,10 +20,17 @@ train: train.c nn.o data_prep.o
 test: test.c nn.o data_prep.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
+
+test_quantized: test_quantized.c nn.o data_prep.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
 predict: predict.c nn.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 summary: summary.c nn.o
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
+quantize: quantize.c nn.o
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 tags:
@@ -33,5 +40,5 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o libnn.so train test predict summary model.txt tags nn.png
+	$(RM) data_prep.o nn.o libnn.so train test test_quantized predict quantize summary model*.txt tags nn.png
 	$(RM) -r __pycache__

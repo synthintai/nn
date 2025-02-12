@@ -85,6 +85,12 @@ The model file is saved as an ASCII file of floating-point values. The first lin
 
 To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference.
 
+## Quantization
+
+To quantize your previously trained model.txt into an 8bit fixed:
+```
+./quantize model.txt quantized_model.txt
+```
 ## License
 
 Copyright (c) 2019-2025 SynthInt Technologies, LLC. All rights reserved.

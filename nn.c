@@ -412,9 +412,9 @@ int nn_save(nn_t *nn, char *path)
 	// width, activation, bias
 	// weight
 
-	fprintf(file, "%d\n", nn->depth);
+	fprintf(file, "%ld\n", nn->depth);
 	for (i = 0; i < nn->depth; i++)
-		fprintf(file, "%d %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
+		fprintf(file, "%ld %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
 	for (layer = 1; layer < nn->depth; layer++)
 		for (i = 0; i < nn->width[layer]; i++)
 			for (j = 0; j < nn->width[layer - 1]; j++)

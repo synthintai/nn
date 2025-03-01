@@ -1,7 +1,11 @@
-all:	train test test_quantized predict quantize summary libnn.so
+all:	train test test_quantized predict quantize summary libnn.a libnn.so
 
 CFLAGS=-Wall -Ofast -march=native -flto -fPIC
-LDFLAGS=-lm
+LDFLAGS=-lm -s
+
+libnn.a: nn.o data_prep.o
+	$(RM) $@
+	$(AR) rv $@ $^
 
 libnn.so: nn.o data_prep.o
 	$(RM) $@
@@ -14,23 +18,23 @@ data_prep.o: data_prep.c data_prep.h
 nn.o: nn.c nn.h
 	$(CC) $(CFLAGS) -c $<
 
-train: train.c nn.o data_prep.o
+train: train.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-test: test.c nn.o data_prep.o
+test: test.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 
-test_quantized: test_quantized.c nn.o data_prep.o
+test_quantized: test_quantized.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-predict: predict.c nn.o
+predict: predict.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-summary: summary.c nn.o
+summary: summary.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-quantize: quantize.c nn.o
+quantize: quantize.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 tags:
@@ -40,5 +44,4 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o libnn.so train test test_quantized predict quantize summary model*.txt tags nn.png
-	$(RM) -r __pycache__
+	$(RM) data_prep.o nn.o libnn.a libnn.so train test test_quantized predict quantize summary model*.txt tags

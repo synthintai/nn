@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <string.h>
+#include <inttypes.h>
 #include "nn.h"
 
 // Private functions
@@ -402,10 +403,9 @@ int nn_save_model(nn_t *nn, char *path)
 	// depth
 	// width, activation, bias
 	// weight
-
-	fprintf(file, "%u\n", nn->depth);
+	fprintf(file, "%" PRId32 "\n", nn->depth);
 	for (i = 0; i < nn->depth; i++)
-		fprintf(file, "%u %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
+		fprintf(file, "%" PRId32 " %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
 	for (layer = 1; layer < nn->depth; layer++)
 		for (i = 0; i < nn->width[layer]; i++)
 			for (j = 0; j < nn->width[layer - 1]; j++)

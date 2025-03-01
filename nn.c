@@ -23,15 +23,7 @@ static float activation_function_none(float a, bool derivative)
 	return 0;
 }
 
-// Identity activation function
-static float activation_function_identity(float a, bool derivative)
-{
-	if (derivative)
-		return 1;
-	return a;
-}
-
-// Linear activation function
+// Linear activation function (aka identity activation function)
 static float activation_function_linear(float a, bool derivative)
 {
 	if (derivative)
@@ -122,7 +114,6 @@ static float activation_function_tanh_fast(float a, bool derivative)
 // These must be in the same order as the enum activation_function_type
 static activation_function_t activation_function[] = {
 	activation_function_none,
-	activation_function_identity,
 	activation_function_linear,
 	activation_function_relu,
 	activation_function_leaky_relu,
@@ -367,7 +358,7 @@ float *nn_predict_quantized(nn_quantized_t *qmodel, float *input) {
 }
 
 // Loads a neural net model file
-nn_t *nn_load(char *path)
+nn_t *nn_load_model(char *path)
 {
 	FILE *file;
 	nn_t *nn;
@@ -399,7 +390,7 @@ nn_t *nn_load(char *path)
 }
 
 // Saves a neural net model file
-int nn_save(nn_t *nn, char *path)
+int nn_save_model(nn_t *nn, char *path)
 {
 	int layer, i, j;
 	FILE *file;
@@ -412,9 +403,9 @@ int nn_save(nn_t *nn, char *path)
 	// width, activation, bias
 	// weight
 
-	fprintf(file, "%ld\n", nn->depth);
+	fprintf(file, "%u\n", nn->depth);
 	for (i = 0; i < nn->depth; i++)
-		fprintf(file, "%ld %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
+		fprintf(file, "%u %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
 	for (layer = 1; layer < nn->depth; layer++)
 		for (i = 0; i < nn->width[layer]; i++)
 			for (j = 0; j < nn->width[layer - 1]; j++)

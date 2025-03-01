@@ -13,7 +13,7 @@ int main(void)
 {
 	nn_t *nn;
 
-	nn = nn_load("model.txt");
+	nn = nn_load_model("model.txt");
 	if (NULL == nn) {
 		printf("Error: Missing or invalid model file.\n");
 		return 1;

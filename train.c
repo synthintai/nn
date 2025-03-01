@@ -33,7 +33,7 @@ int main(void)
 	// Load sample data into a data structure in memory
 	data = data_load("train.csv", num_inputs, num_outputs);
 	// Initialize a neural network model
-	nn = nn_load("model.txt");
+	nn = nn_load_model("model.txt");
 	if (NULL == nn) {
 		printf("Creating new model.\n");
 		nn = nn_init();
@@ -66,7 +66,7 @@ int main(void)
 		learning_rate *= annealing;
 		// Incremental save
 		// Incremental saving of the neural network architecture and weights to a file so that it can be used later
-		nn_save(nn, "model.txt");
+		nn_save_model(nn, "model.txt");
 	}
 	data_free(data);
 	nn_free(nn);

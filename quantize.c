@@ -138,7 +138,7 @@ int main(int argc, char *argv[]) {
     char* output_model = argv[2];
     
     // Load the original network
-    nn_t* network = nn_load(input_model);
+    nn_t* network = nn_load_model(input_model);
     if (!network) {
         fprintf(stderr, "Failed to load input model: %s\n", input_model);
         return 1;

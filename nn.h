@@ -16,7 +16,6 @@
 
 typedef enum activation_function_type {
 	ACTIVATION_FUNCTION_TYPE_NONE = 0,
-	ACTIVATION_FUNCTION_TYPE_IDENTITY,
 	ACTIVATION_FUNCTION_TYPE_LINEAR,
 	ACTIVATION_FUNCTION_TYPE_RELU,
 	ACTIVATION_FUNCTION_TYPE_LEAKY_RELU,
@@ -52,8 +51,8 @@ nn_t *nn_init(void);
 void nn_free(nn_t *nn);
 void nn_free_quantized(nn_quantized_t* quantized_network);
 int nn_add_layer(nn_t *nn, int width, int activation, float bias);
-int nn_save(nn_t *nn, char *path);
-nn_t *nn_load(char *path);
+int nn_save_model(nn_t *nn, char *path);
+nn_t *nn_load_model(char *path);
 nn_quantized_t* nn_load_quantized(const char* path);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);

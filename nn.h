@@ -11,7 +11,7 @@
 // NN API Version
 #define NN_VERSION_MAJOR	0
 #define NN_VERSION_MINOR	1
-#define NN_VERSION_PATCH	1
+#define NN_VERSION_PATCH	2
 #define NN_VERSION_BUILD	0
 
 typedef enum activation_function_type {
@@ -28,9 +28,9 @@ typedef enum activation_function_type {
 } activation_function_type_t;
 
 typedef struct nn {
-	uint32_t depth;			// Number of layers, including the input and the output layers
-	uint32_t *width;			// Number of neurons in each layer (can vary from layer to layer)
-	uint8_t *activation;	// Activation function used for each layer (can be different for each layer)
+	uint32_t depth;		// Number of layers, including the input and the output layers
+	uint32_t *width;	// Number of neurons in each layer (can vary from layer to layer)
+	uint8_t *activation;// Activation function used for each layer (can be different for each layer)
 	float *bias;		// Biases by layer (each layer can have its own bias)
 	float **neuron;		// Output value for each neuron in each layer
 	float **loss;		// Error derivative for each neuron in each layer

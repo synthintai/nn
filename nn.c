@@ -300,9 +300,13 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 	for (i = nn->depth - 2; i > 0 ; i--) {
 		for (j = 0; j < nn->width[i]; j++) {
 			sum = 0;
-			for (k = 0; k < nn->width[i + 1]; k++)
-				sum += nn->loss[i + 1][k] * activation_function[nn->activation[i]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
-			nn->loss[i][j] = sum;
+			for (k = 0; k < nn->width[i + 1]; k++) {
+				// Apply the derivative of the activation function for the next layer’s neurons
+				sum += nn->loss[i + 1][k] * activation_function[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
+			}
+			// The chain rule dictates that we should multiply the summed loss by the derivative of the activation at the current neuron, 
+			// not only during weight updates, but immediately when calculating loss[i][j].
+			nn->loss[i][j] = sum * activation_function[nn->activation[i]](nn->preact[i][j], true);
 		}
 	}
 	// Calculate the weight adjustments

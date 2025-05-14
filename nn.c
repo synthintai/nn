@@ -548,3 +548,66 @@ uint32_t nn_version(void)
 {
 	return (NN_VERSION_MAJOR << 24) | (NN_VERSION_MINOR << 16) | (NN_VERSION_PATCH << 8) | NN_VERSION_BUILD;
 }
+
+int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
+{
+    if (!nn || layer <= 0 || layer >= nn->depth || neuron_index < 0 || neuron_index >= nn->width[layer])
+        return 1; // Invalid parameters
+
+    int i;
+
+    // Shrink neuron-related arrays in the current layer
+    memmove(&nn->neuron[layer][neuron_index],
+            &nn->neuron[layer][neuron_index + 1],
+            sizeof(float) * (nn->width[layer] - neuron_index - 1));
+
+    memmove(&nn->preact[layer][neuron_index],
+            &nn->preact[layer][neuron_index + 1],
+            sizeof(float) * (nn->width[layer] - neuron_index - 1));
+
+    memmove(&nn->loss[layer][neuron_index],
+            &nn->loss[layer][neuron_index + 1],
+            sizeof(float) * (nn->width[layer] - neuron_index - 1));
+
+    // Free the weights and adjustments of the neuron being removed
+    free(nn->weight[layer][neuron_index]);
+    free(nn->weight_adj[layer][neuron_index]);
+
+    // Shift weight and adjustment pointers
+    memmove(&nn->weight[layer][neuron_index],
+            &nn->weight[layer][neuron_index + 1],
+            sizeof(float *) * (nn->width[layer] - neuron_index - 1));
+
+    memmove(&nn->weight_adj[layer][neuron_index],
+            &nn->weight_adj[layer][neuron_index + 1],
+            sizeof(float *) * (nn->width[layer] - neuron_index - 1));
+
+    // Reallocate memory to shrink the arrays
+    nn->neuron[layer]     = realloc(nn->neuron[layer],     sizeof(float) * (nn->width[layer] - 1));
+    nn->preact[layer]     = realloc(nn->preact[layer],     sizeof(float) * (nn->width[layer] - 1));
+    nn->loss[layer]       = realloc(nn->loss[layer],       sizeof(float) * (nn->width[layer] - 1));
+    nn->weight[layer]     = realloc(nn->weight[layer],     sizeof(float *) * (nn->width[layer] - 1));
+    nn->weight_adj[layer] = realloc(nn->weight_adj[layer], sizeof(float *) * (nn->width[layer] - 1));
+
+    // Update weights in the NEXT layer: each neuron in the next layer loses one input connection
+    if (layer + 1 < nn->depth) {
+        for (i = 0; i < nn->width[layer + 1]; i++) {
+            // Shift left the weights connected to the removed neuron
+            memmove(&nn->weight[layer + 1][i][neuron_index],
+                    &nn->weight[layer + 1][i][neuron_index + 1],
+                    sizeof(float) * (nn->width[layer] - neuron_index - 1));
+            memmove(&nn->weight_adj[layer + 1][i][neuron_index],
+                    &nn->weight_adj[layer + 1][i][neuron_index + 1],
+                    sizeof(float) * (nn->width[layer] - neuron_index - 1));
+
+            // Shrink the arrays
+            nn->weight[layer + 1][i] = realloc(nn->weight[layer + 1][i], sizeof(float) * (nn->width[layer] - 1));
+            nn->weight_adj[layer + 1][i] = realloc(nn->weight_adj[layer + 1][i], sizeof(float) * (nn->width[layer] - 1));
+        }
+    }
+
+    // Update width metadata
+    nn->width[layer] -= 1;
+
+    return 0; // Success
+}

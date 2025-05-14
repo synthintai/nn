@@ -127,6 +127,7 @@ static activation_function_t activation_function[] = {
 };
 
 // Computes the error given a cost function
+// The loss function is a basic mean-square error (MSE)
 static float error(float a, float b)
 {
 	return 0.5f * (a - b) * (a - b);
@@ -151,7 +152,7 @@ static void forward_propagation(nn_t *nn)
 				sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
 			sum += nn->bias[i];
 			nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
-			// Store the preactivation value of this neuron for later use in backpropagation
+			// To improve efficiency, we cache the preactivation value of this neuron for later use in backpropagation
 			nn->preact[i][j] = sum;
 		}
 	}
@@ -309,7 +310,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 			nn->loss[i][j] = sum * activation_function[nn->activation[i]](nn->preact[i][j], true);
 		}
 	}
-	// Calculate the weight adjustments
+	// Calculate the weight adjustments - However, their update is delayed until after full backprop traversal.
 	// The weights cannot be updated while back-propagating, because back propagating each layer depends on the next layer's weights.
 	// So we save the weight adjustments in a temporary array and apply them all at once later.	
 	for (i = nn->depth - 1; i > 0 ; i--)

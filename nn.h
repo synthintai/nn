@@ -60,5 +60,7 @@ float *nn_predict_quantized(nn_quantized_t* qmodel, float* input);
 float activate(float value, int activation_type);
 uint32_t nn_version(void);
 int nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
+float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);
+void nn_prune_lightest_neuron(nn_t *nn);
 
 #endif /* NN_H */

@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <inttypes.h>
+#include <float.h>
 #include "nn.h"
 
 // Private functions
@@ -610,4 +611,57 @@ int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
     nn->width[layer] -= 1;
 
     return 0; // Success
+}
+
+// Returns the total weight associated with a given neuron, defined as the sum of the absolute values of both:
+// Input weights (weights feeding into the neuron from the previous layer)
+// Output weights (weights going out from the neuron to the next layer)
+float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
+{
+    if (!nn || layer <= 0 || layer >= nn->depth || neuron_index < 0 || neuron_index >= nn->width[layer])
+        return 0; // Invalid input
+
+    float total = 0.0f;
+    int i;
+    // Sum input weights (from previous layer to this neuron)
+    for (i = 0; i < nn->width[layer - 1]; i++) {
+        total += fabsf(nn->weight[layer][neuron_index][i]);
+    }
+    // Sum output weights (from this neuron to next layer neurons)
+    if (layer + 1 < nn->depth) {
+        for (i = 0; i < nn->width[layer + 1]; i++) {
+            total += fabsf(nn->weight[layer + 1][i][neuron_index]);
+        }
+    }
+    return total;
+}
+
+void nn_prune_lightest_neuron(nn_t *nn)
+{
+    if (!nn || nn->depth < 2) {
+        printf("Invalid or uninitialized network.\n");
+        return;
+    }
+    int lightest_layer = -1;
+    int lightest_index = -1;
+    float min_weight = FLT_MAX;
+    for (int layer = 1; layer < (nn->depth - 1); layer++) {
+        for (int neuron = 0; neuron < nn->width[layer]; neuron++) {
+            float total_weight = nn_get_total_neuron_weight(nn, layer, neuron);
+            if (total_weight < 0) {
+                continue; // Skip invalid neurons
+            }
+
+            if (total_weight < min_weight) {
+                min_weight = total_weight;
+                lightest_layer = layer;
+                lightest_index = neuron;
+            }
+        }
+    }
+    if (lightest_layer != -1) {
+		nn_remove_neuron(nn, lightest_layer, lightest_index);
+    } else {
+        printf("No neurons with valid weights found.\n");
+    }
 }

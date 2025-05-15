@@ -46,7 +46,7 @@ int main(void)
 		printf("Using existing model file\n");
 		if ((nn->width[0] != num_inputs) || (nn->width[nn->depth - 1] != num_outputs))
 		{
-			printf("Error: Model is a different size.\n");
+			printf("Error: Model data is a different size than its meta data describes.\n");
 			return(1);
 		}
 	}

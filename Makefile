@@ -1,4 +1,4 @@
-all:	train test test_quantized predict quantize summary libnn.a libnn.so
+all:	train test test_quantized predict quantize prune summary libnn.a libnn.so
 
 CFLAGS=-Wall -Ofast -march=native -flto -fPIC
 LDFLAGS=-lm -s
@@ -31,6 +31,9 @@ test_quantized: test_quantized.c libnn.a
 predict: predict.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
+prune: prune.c libnn.a
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
 summary: summary.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
@@ -44,4 +47,4 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o libnn.a libnn.so train test test_quantized predict quantize summary model*.txt tags
+	$(RM) data_prep.o nn.o libnn.a libnn.so train test test_quantized predict quantize prune summary model*.txt tags

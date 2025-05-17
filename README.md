@@ -12,15 +12,19 @@ This is a lightweight neural network library for use in microcontrollers and emb
 
 The code is divided into the following sections:
 
-1. `nn.[ch]` - The neural net library, which can be pulled directly into a project.
+1. `nn.[ch]` - The neural net library, which can be pulled directly into your embedded project.
 
-2. `data_prep.[ch]` - Data processing functions, used to read, parse, and shuffle sample data on which to train a model.
+2. `data_prep.[ch]` - Data processing functions, used to read, parse, and shuffle training data.
 
 3. `train.c` - An example of how to construct, train, and save a neural network model.
 
-4. `test.c` - Evaluates the model performance, comparing predictions to ground truth of seen vs. unseen data.
+4. `test.c` - Evaluates model performance, comparing predictions to ground truth of seen vs. unseen data.
 
 5. `predict.c` - Demonstrates how to use a trained neural network model in a target application to make predictions on new data.
+
+6. `prune.c` - Removes least contributing neuron from a network to reduce model size and improve performance.
+
+7. `quantize.c` - Converts a floating-point model to a 8-bit integer model. This reduces model size by about 66%.
 
 ## Features
 
@@ -51,6 +55,8 @@ To train:
 ```
 ./train
 ```
+The model can be further trained (or fine-tuned) simply by re-running the training program, which further trains a model file if it exists.
+
 The included example data is the Semeion Handwritten Digit Data Set from the UCI Machine Learning Repository at:
 
 http://archive.ics.uci.edu/ml/datasets/semeion+handwritten+digit
@@ -65,6 +71,24 @@ To evaluate the model performance:
 To use the trained model:
 ```
 ./predict
+```
+
+To prune the model (removes the least contributing neuron):
+
+```
+./prune
+```
+
+To quantize the trained model (which is floating point by default), run the following command:
+
+```
+./quantize model.txt model_quantized.txt
+```
+
+To test the quantized model:
+
+```
+./test_quantized
 ```
 
 ## Architecture
@@ -85,12 +109,6 @@ The model file is saved as an ASCII file of floating-point values. The first lin
 
 To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference.
 
-## Quantization
-
-To quantize your previously trained model.txt into an 8bit fixed:
-```
-./quantize model.txt quantized_model.txt
-```
 ## License
 
 Copyright (c) 2019-2025 SynthInt Technologies, LLC. All rights reserved.

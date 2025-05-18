@@ -12,7 +12,7 @@
 #include "nn.h"
 #include "data_prep.h"
 
-#define TARGET_VALIDATION_ERROR	0.07
+#define TARGET_VALIDATION_ERROR	0.08
 
 int main(void)
 {

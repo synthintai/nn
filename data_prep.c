@@ -102,7 +102,6 @@ data_t *data_load(char *path, int num_inputs, int num_outputs)
 
 	file = fopen(path, "r");
 	if (file == NULL) {
-		printf("Error: Could not open %s\n", path);
 		return NULL;
 	}
 	num_rows = data_num_lines(file);

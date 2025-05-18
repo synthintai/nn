@@ -23,15 +23,29 @@ int main(void)
 	float annealing = 1.0f;
 	int epochs = 0;
 	// End of tunable parameters
-	data_t *data;
+	data_t *train_data;
+	data_t *validation_data;
 	nn_t *nn;
 	int j;
 	float train_error = 1.0f;
+	float validation_error = 1.0f;
+	float total_train_error = 0.0f;
+	float total_validation_error = 0.0f;
 
 	// Set the random seed
 	srand(time(0));
-	// Load sample data into a data structure in memory
-	data = data_load("train.csv", num_inputs, num_outputs);
+	// Load the training data into a data structure in memory
+	train_data = data_load("train.csv", num_inputs, num_outputs);
+	if (NULL == train_data) {
+		printf("Error: Could not load training data.\n");
+		return(1);
+	}
+	// Load the validation data into a data structure in memory
+	validation_data = data_load("validation.csv", num_inputs, num_outputs);
+	if (NULL == validation_data) {
+		printf("Error: Could not load validation data.\n");
+		return(1);
+	}
 	// Initialize a neural network model
 	nn = nn_load_model("model.txt");
 	if (NULL == nn) {
@@ -39,8 +53,8 @@ int main(void)
 		nn = nn_init();
 		// Construct the neural network, layer by layer
 		nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
-		nn_add_layer(nn, 100, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
-		nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
+		nn_add_layer(nn, 80, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
+		nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
 		nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 	} else {
 		printf("Using existing model file\n");
@@ -50,25 +64,34 @@ int main(void)
 			return(1);
 		}
 	}
-	printf("train error, learning_rate\n");
+	printf("train error, validation error, learning rate\n");
 	while (train_error > TARGET_TRAIN_ERROR) {
-		float total_error = 0.0f;
 		// It is critical to shuffle training data before each epoch to properly train the model
-		data_shuffle(data);
-		for (j = 0; j < data->num_rows; j++) {
-			float *input = data->input[j];
-			float *target = data->target[j];
-			total_error += nn_train(nn, input, target, learning_rate);
+		data_shuffle(train_data);
+		// Train on each row of training data
+		total_train_error = 0.0f;
+		for (j = 0; j < train_data->num_rows; j++) {
+			float *input = train_data->input[j];
+			float *target = train_data->target[j];
+			total_train_error += nn_train(nn, input, target, learning_rate);
 		}
+		train_error = total_train_error / train_data->num_rows;
+		// Check the model against the validation data
+		total_validation_error = 0.0f;
+		for (j = 0; j < validation_data->num_rows; j++) {
+			float *input = validation_data->input[j];
+			float *target = validation_data->target[j];
+			total_validation_error += nn_error(nn, input, target);
+		}
+		validation_error = total_validation_error / validation_data->num_rows;
 		epochs++;
-		train_error = total_error / data->num_rows;
-		printf("%.5f, %.5f\n", train_error, learning_rate);
+		printf("%.5f, %.5f, %.5f\n", train_error, validation_error, learning_rate);
 		learning_rate *= annealing;
-		// Incremental save
-		// Incremental saving of the neural network architecture and weights to a file so that it can be used later
+		// At each training step, save the neural network architecture and weights to a file so that it can be used later
 		nn_save_model(nn, "model.txt");
 	}
-	data_free(data);
+	data_free(validation_data);
+	data_free(train_data);
 	nn_free(nn);
 	printf("Final train error: %f\n", train_error);
 	printf("Training epochs: %d\n", epochs);

@@ -85,6 +85,10 @@ static float activation_function_sigmoid_fast(float a, bool derivative)
 	int index;
 	float fraction = 0;
 
+	if (a < -11)
+		a = -11;
+	else if (a > 11)
+		a = 11;
 	index = floor(a) + 11;
 	if (index < 0)
 		index = 0;

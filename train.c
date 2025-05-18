@@ -12,7 +12,7 @@
 #include "nn.h"
 #include "data_prep.h"
 
-#define TARGET_TRAIN_ERROR	0.01
+#define TARGET_VALIDATION_ERROR	0.07
 
 int main(void)
 {
@@ -53,8 +53,8 @@ int main(void)
 		nn = nn_init();
 		// Construct the neural network, layer by layer
 		nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
-		nn_add_layer(nn, 80, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
-		nn_add_layer(nn, 40, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
+		nn_add_layer(nn, 100, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
+		nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
 		nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
 	} else {
 		printf("Using existing model file\n");
@@ -65,7 +65,7 @@ int main(void)
 		}
 	}
 	printf("train error, validation error, learning rate\n");
-	while (train_error > TARGET_TRAIN_ERROR) {
+	while (validation_error > TARGET_VALIDATION_ERROR) {
 		// It is critical to shuffle training data before each epoch to properly train the model
 		data_shuffle(train_data);
 		// Train on each row of training data

@@ -26,6 +26,8 @@ The code is divided into the following sections:
 
 7. `quantize.c` - Converts a floating-point model to a 8-bit integer model. This reduces model size by about 66%.
 
+8. `summary.c` - Describes a model.
+
 ## Features
 
 With this library, neural networks of any width and depth may be constructed and trained. The following activation functions are supported:

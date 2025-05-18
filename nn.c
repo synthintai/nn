@@ -317,7 +317,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 	for (i = nn->depth - 1; i > 0 ; i--)
 		for (j = 0; j < nn->width[i]; j++)
 			for (k = 0; k < nn->width[i - 1]; k++)
-				nn->weight_adj[i][j][k] = nn->loss[i][j] * activation_function[nn->activation[i]](nn->preact[i][j], true) * nn->neuron[i - 1][k];
+				nn->weight_adj[i][j][k] = nn->loss[i][j] * nn->neuron[i - 1][k];
 	// Apply the weight adjustments
 	for (i = nn->depth - 1; i > 0 ; i--)
 		for (j = 0; j < nn->width[i]; j++)

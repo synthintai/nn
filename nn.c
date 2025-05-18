@@ -275,6 +275,22 @@ int nn_add_layer(nn_t *nn, int width, int activation, float bias)
 	return 0;
 }
 
+// Returns the total error of the network given a set of inputs and target outputs
+float nn_error(nn_t *nn, float *inputs, float *targets)
+{
+	int i, j;
+	float err = 0;
+
+	nn->neuron[0] = inputs;
+	forward_propagation(nn);
+	// Select last layer (output layer)
+	i = nn->depth - 1;
+	for (j = 0; j < nn->width[i]; j++) {
+		err += error(targets[j], nn->neuron[i][j]);
+	}
+	return err;
+}
+
 // Trains a nn with a given input and target output at a specified learning rate.
 // The rate (or step size) controls how far in the search space to move against the
 // gradient in each iteration of the algorithm.
@@ -283,7 +299,6 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 {
 	float sum;
 	int i, j, k;
-	float err = 0;
 
 	nn->neuron[0] = inputs;
 	forward_propagation(nn);
@@ -296,7 +311,6 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 	for (j = 0; j < nn->width[i]; j++) {
 		// Calculate the loss between the target and the outputs of the last layer
 		nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]);
-		err += error(targets[j], nn->neuron[i][j]);
 	}
 	// Calculate losses throughout the inner layers, not including layer 0 which can have no loss
 	for (i = nn->depth - 2; i > 0 ; i--) {
@@ -323,7 +337,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 		for (j = 0; j < nn->width[i]; j++)
 			for (k = 0; k < nn->width[i - 1]; k++)
 				nn->weight[i][j][k] += nn->weight_adj[i][j][k] * rate;
-	return err;
+	return nn_error(nn, inputs, targets);
 }
 
 // Returns an output prediction given an input

@@ -54,6 +54,7 @@ int nn_add_layer(nn_t *nn, int width, int activation, float bias);
 int nn_save_model(nn_t *nn, char *path);
 nn_t *nn_load_model(char *path);
 nn_quantized_t* nn_load_quantized(const char* path);
+float nn_error(nn_t *nn, float *inputs, float *targets);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);
 float *nn_predict_quantized(nn_quantized_t* qmodel, float* input);

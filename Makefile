@@ -41,13 +41,13 @@ quantize: quantize.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 train.csv: samples.csv
-	./split.sh
+	./split.py
 
 validation.csv: samples.csv
-	./split.sh
+	./split.py
 
 test.csv: samples.csv
-	./split.sh
+	./split.py
 
 tags:
 	ctags -R *

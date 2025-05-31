@@ -11,7 +11,7 @@
 // NN API Version
 #define NN_VERSION_MAJOR	0
 #define NN_VERSION_MINOR	1
-#define NN_VERSION_PATCH	2
+#define NN_VERSION_PATCH	3
 #define NN_VERSION_BUILD	0
 
 typedef enum activation_function_type {
@@ -26,6 +26,13 @@ typedef enum activation_function_type {
 	ACTIVATION_FUNCTION_TYPE_TANH,
 	ACTIVATION_FUNCTION_TYPE_TANH_FAST
 } activation_function_type_t;
+
+typedef enum {
+	POOLING_TYPE_NONE = 0,
+	POOLING_TYPE_MIN,
+	POOLING_TYPE_MAX,
+	POOLING_TYPE_AVG,
+} pooling_type_t;
 
 typedef struct nn {
 	uint32_t depth;		// Number of layers, including the input and the output layers
@@ -62,6 +69,8 @@ float activate(float value, int activation_type);
 uint32_t nn_version(void);
 int nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
 float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);
-void nn_prune_lightest_neuron(nn_t *nn);
+bool nn_prune_lightest_neuron(nn_t *nn);
+void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size);
+void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int stride, activation_function_type_t activation_function_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size);
 
 #endif /* NN_H */

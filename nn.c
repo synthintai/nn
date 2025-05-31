@@ -654,32 +654,120 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
     return total;
 }
 
-void nn_prune_lightest_neuron(nn_t *nn)
+bool nn_prune_lightest_neuron(nn_t *nn)
 {
-    if (!nn || nn->depth < 2) {
-        printf("Invalid or uninitialized network.\n");
-        return;
-    }
-    int lightest_layer = -1;
-    int lightest_index = -1;
-    float min_weight = FLT_MAX;
-    for (int layer = 1; layer < (nn->depth - 1); layer++) {
-        for (int neuron = 0; neuron < nn->width[layer]; neuron++) {
-            float total_weight = nn_get_total_neuron_weight(nn, layer, neuron);
-            if (total_weight < 0) {
-                continue; // Skip invalid neurons
-            }
+	if (!nn || nn->depth < 2) {
+		// Invalid or uninitialized network
+		return false;
+	}
+	int lightest_layer = -1;
+	int lightest_index = -1;
+	float min_weight = FLT_MAX;
+	for (int layer = 1; layer < (nn->depth - 1); layer++) {
+		for (int neuron = 0; neuron < nn->width[layer]; neuron++) {
+			float total_weight = nn_get_total_neuron_weight(nn, layer, neuron);
+			if (total_weight < 0) {
+				continue; // Skip invalid neurons
+			}
+			if (total_weight < min_weight) {
+				min_weight = total_weight;
+				lightest_layer = layer;
+				lightest_index = neuron;
+			}
+		}
+	}
+	if (lightest_layer == -1) {
+		// No neurons with valid weights found
+		return false;
+	}
+	nn_remove_neuron(nn, lightest_layer, lightest_index);
+	return true;
+}
 
-            if (total_weight < min_weight) {
-                min_weight = total_weight;
-                lightest_layer = layer;
-                lightest_index = neuron;
-            }
-        }
-    }
-    if (lightest_layer != -1) {
-		nn_remove_neuron(nn, lightest_layer, lightest_index);
-    } else {
-        printf("No neurons with valid weights found.\n");
-    }
+void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
+{
+	uint32_t pool_value;
+	uint32_t pool_value_temp;
+
+	*x_out_size = ((x_in_size - filter_size) / stride) + 1;
+	*y_out_size = ((y_in_size - filter_size) / stride) + 1;
+	for (int z = 0; z < 4; z++) {
+		for (int y_out = 0; y_out < *y_out_size; y_out++) {
+			for (int x_out = 0; x_out < *x_out_size; x_out++) {
+				switch (pooling_type) {
+				case POOLING_TYPE_MIN:
+					pool_value = 255;
+					for (int filter_y = 0; filter_y < filter_size; filter_y++) {
+						for (int filter_x = 0; filter_x < filter_size; filter_x++) {
+							pool_value_temp = *(char*) (src + z + (x_out + filter_x) * stride * 4 + (y_out + filter_y) * stride * 4 * x_in_size);
+							if (pool_value_temp < pool_value) {
+								pool_value = pool_value_temp;
+							}
+						}
+					}
+					break;
+				case POOLING_TYPE_MAX:
+					pool_value = 0;
+					for (int filter_y = 0; filter_y < filter_size; filter_y++) {
+						for (int filter_x = 0; filter_x < filter_size; filter_x++) {
+							pool_value_temp = *(char*) (src + z + (x_out + filter_x) * stride * 4 + (y_out + filter_y) * stride * 4 * x_in_size);
+							if (pool_value_temp > pool_value) {
+								pool_value = pool_value_temp;
+							}
+						}
+					}
+					break;
+				case POOLING_TYPE_AVG:
+					pool_value = 0;
+					for (int filter_y = 0; filter_y < filter_size; filter_y++) {
+						for (int filter_x = 0; filter_x < filter_size; filter_x++) {
+							pool_value += *(char*) (src + z + (x_out + filter_x) * stride * 4 + (y_out + filter_y) * stride * 4 * x_in_size);
+						}
+					}
+					pool_value /= filter_size * filter_size;
+					break;
+				case POOLING_TYPE_NONE:
+				default:
+					pool_value = 0;
+					break;
+				}
+				*(char*) (dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = pool_value;
+			}
+		}
+	}
+}
+
+void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int stride, activation_function_type_t activation_function_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
+{
+	uint32_t kernel_value;
+
+	*x_out_size = ((x_in_size - kernel_size) / stride) + 1;
+	*y_out_size = ((y_in_size - kernel_size) / stride) + 1;
+	for (int z = 0; z < 4; z++) {
+		for (int y_out = 0; y_out < *y_out_size; y_out++) {
+			for (int x_out = 0; x_out < *x_out_size; x_out++) {
+				switch (activation_function_type) {
+				case ACTIVATION_FUNCTION_TYPE_LINEAR:
+					kernel_value = 0;
+					for (int kernel_y = 0; kernel_y < kernel_size; kernel_y++) {
+						for (int kernel_x = 0; kernel_x < kernel_size; kernel_x++) {
+							kernel_value += *(char*) (src + z + (x_out + kernel_x) * stride * 4 + (y_out + kernel_y) * stride * 4 * x_in_size) * *(kernel + kernel_x + kernel_y * kernel_x);
+						}
+					}
+					kernel_value /= kernel_size * kernel_size;
+					break;
+				case ACTIVATION_FUNCTION_TYPE_NONE:
+				default:
+					kernel_value = 0;
+					break;
+				}
+				if (z == 3) {
+					// Set Alpha channel to max
+					*(char*) (dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = 255;
+				} else {
+					*(char*) (dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = kernel_value;
+				}
+			}
+		}
+	}
 }

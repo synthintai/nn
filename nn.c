@@ -442,6 +442,39 @@ int nn_save_model(nn_t *nn, char *path)
 	return 0;
 }
 
+int nn_save_quantized(nn_quantized_t *quantized_network, char *path)
+{
+	if (!quantized_network || !path)
+		return -1;
+	FILE* file = fopen(path, "w");
+	if (!file)
+		return -1;
+	nn_t* network = quantized_network->original_network;
+	// Save network architecture
+	fprintf(file, "%" PRId32 "\n", network->depth);
+	for (int i = 0; i < network->depth; i++) {
+		fprintf(file, "%" PRId32 " %d %f\n", network->width[i], network->activation[i], network->bias[i]);
+	}
+	// Save quantized weights and scales
+	for (int layer = 1; layer < network->depth; layer++) {
+		for (int neuron = 0; neuron < network->width[layer]; neuron++) {
+			// Save weight scale
+			fprintf(file, "%f\n", quantized_network->weight_scales[layer][neuron]);
+			// Save quantized weights
+			for (int w = 0; w < network->width[layer-1]; w++) {
+				fprintf(file, "%d\n", quantized_network->weight[layer][neuron][w]);
+			}
+		}
+		// Save bias scale and quantized biases
+		fprintf(file, "%f\n", quantized_network->bias_scales[layer]);
+		for (int neuron = 0; neuron < network->width[layer]; neuron++) {
+			fprintf(file, "%d\n", quantized_network->bias[layer][neuron]);
+		}
+	}
+	fclose(file);
+	return 0;
+}
+
 void nn_free_quantized(nn_quantized_t* quantized_network) {
 	if (!quantized_network) return;
 

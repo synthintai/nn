@@ -59,6 +59,7 @@ void nn_free(nn_t *nn);
 void nn_free_quantized(nn_quantized_t* quantized_network);
 int nn_add_layer(nn_t *nn, int width, int activation, float bias);
 int nn_save_model(nn_t *nn, char *path);
+int nn_save_quantized(nn_quantized_t *quantized_network, char *path);
 nn_t *nn_load_model(char *path);
 nn_quantized_t* nn_load_quantized(const char* path);
 float nn_error(nn_t *nn, float *inputs, float *targets);

@@ -14,7 +14,7 @@
 #define NN_VERSION_PATCH	3
 #define NN_VERSION_BUILD	0
 
-typedef enum activation_function_type {
+typedef enum {
 	ACTIVATION_FUNCTION_TYPE_NONE = 0,
 	ACTIVATION_FUNCTION_TYPE_LINEAR,
 	ACTIVATION_FUNCTION_TYPE_RELU,
@@ -34,7 +34,7 @@ typedef enum {
 	POOLING_TYPE_AVG,
 } pooling_type_t;
 
-typedef struct nn {
+typedef struct {
 	uint32_t depth;		// Number of layers, including the input and the output layers
 	uint32_t *width;	// Number of neurons in each layer (can vary from layer to layer)
 	uint8_t *activation;// Activation function used for each layer (can be different for each layer)
@@ -65,7 +65,6 @@ float nn_error(nn_t *nn, float *inputs, float *targets);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);
 float *nn_predict_quantized(nn_quantized_t* qmodel, float* input);
-float activate(float value, int activation_type);
 uint32_t nn_version(void);
 int nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
 float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);

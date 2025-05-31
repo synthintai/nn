@@ -373,8 +373,12 @@ float *nn_predict_quantized(nn_quantized_t *qmodel, float *input) {
 			// Dequantize bias
 			float bias = qmodel->quantized_biases[layer][neuron] * qmodel->bias_scales[layer];
 			sum += bias;
+			// Bounds check activation type to prevent invalid access
+			if (original->activation[layer] < 0 || original->activation[layer] >= (int)(sizeof(activation_function)/sizeof(activation_function[0]))) {
+				original->activation[layer] = ACTIVATION_FUNCTION_TYPE_NONE;
+			}
 			// Apply activation
-			new_activations[neuron] = activate(sum, original->activation[layer]);
+			new_activations[neuron] = activation_function[original->activation[layer]](sum, false);
 		}
 		free(activations);
 		activations = new_activations;
@@ -553,14 +557,6 @@ error:
 	fclose(file);
 	nn_free_quantized(qmodel);
 	return NULL;
-}
-
-float activate(float value, int activation_type) {
-	// Bounds check to prevent invalid access
-	if (activation_type < 0 || activation_type >= (int)(sizeof(activation_function)/sizeof(activation_function[0]))) {
-		return activation_function[ACTIVATION_FUNCTION_TYPE_NONE](value, false);
-	}
-	return activation_function[activation_type](value, false);
 }
 
 uint32_t nn_version(void)

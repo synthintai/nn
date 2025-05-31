@@ -47,11 +47,11 @@ typedef struct {
 } nn_t;
 
 typedef struct {
-	nn_t* original_network;
-	int8_t*** quantized_weights;
-	float** weight_scales;
-	int8_t** quantized_biases;
-	float* bias_scales;
+	nn_t *original_network;
+	float *bias_scales;
+	int8_t **bias;
+	float **weight_scales;
+	int8_t ***weight;
 } nn_quantized_t;
 
 nn_t *nn_init(void);

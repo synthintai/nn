@@ -39,20 +39,20 @@ nn_quantized_t* nn_quantize(nn_t* network)
 		return NULL;
 	quantized->original_network = network;
 	// Allocate memory for quantized weights and scales
-	quantized->quantized_weights = malloc(sizeof(int8_t**) * network->depth);
+	quantized->weight = malloc(sizeof(int8_t**) * network->depth);
 	quantized->weight_scales = malloc(sizeof(float*) * network->depth);
-	quantized->quantized_biases = malloc(sizeof(int8_t*) * network->depth);
+	quantized->bias = malloc(sizeof(int8_t*) * network->depth);
 	quantized->bias_scales = malloc(sizeof(float) * network->depth);
 	for (int layer = 1; layer < network->depth; layer++) {
 		int prev_width = network->width[layer-1];
 		int curr_width = network->width[layer];
 		// Allocate memory for this layer
-		quantized->quantized_weights[layer] = malloc(sizeof(int8_t*) * curr_width);
+		quantized->weight[layer] = malloc(sizeof(int8_t*) * curr_width);
 		quantized->weight_scales[layer] = malloc(sizeof(float) * curr_width);
-		quantized->quantized_biases[layer] = malloc(sizeof(int8_t) * curr_width);
+		quantized->bias[layer] = malloc(sizeof(int8_t) * curr_width);
 		// Quantize weights for each neuron in this layer
 		for (int neuron = 0; neuron < curr_width; neuron++) {
-			quantized->quantized_weights[layer][neuron] = malloc(sizeof(int8_t) * prev_width);
+			quantized->weight[layer][neuron] = malloc(sizeof(int8_t) * prev_width);
 			// Find min/max for weights of this neuron
 			float min_val, max_val;
 			find_layer_minmax(network->weight[layer][neuron], prev_width, &min_val, &max_val);
@@ -62,7 +62,7 @@ nn_quantized_t* nn_quantize(nn_t* network)
 			float zero_point = 0.0f;  // For symmetric quantization
 			// Quantize weights
 			for (int w = 0; w < prev_width; w++) {
-				quantized->quantized_weights[layer][neuron][w] = quantize_value(network->weight[layer][neuron][w], scale, zero_point);
+				quantized->weight[layer][neuron][w] = quantize_value(network->weight[layer][neuron][w], scale, zero_point);
 			}
 		}
 		// One bias per Neuron
@@ -72,10 +72,10 @@ nn_quantized_t* nn_quantize(nn_t* network)
 		float bias_scale = (max_bias_val < 1e-6f) ? 1.0f : (max_bias_val / 127.0f);
 		quantized->bias_scales[layer] = bias_scale;
 		// Quantize the single bias value for the entire layer
-		int8_t quantized_bias = quantize_value(layer_bias, bias_scale, 0.0f);
+		int8_t bias = quantize_value(layer_bias, bias_scale, 0.0f);
 		// Assign same quantized bias to all neurons in this layer
 		for (int neuron = 0; neuron < curr_width; neuron++) {
-			quantized->quantized_biases[layer][neuron] = quantized_bias;
+			quantized->bias[layer][neuron] = bias;
 		}
 	}
 	return quantized;
@@ -101,13 +101,13 @@ int nn_save_quantized(nn_quantized_t* quantized_network, const char* path)
 			fprintf(file, "%f\n", quantized_network->weight_scales[layer][neuron]);
 			// Save quantized weights
 			for (int w = 0; w < network->width[layer-1]; w++) {
-				fprintf(file, "%d\n", quantized_network->quantized_weights[layer][neuron][w]);
+				fprintf(file, "%d\n", quantized_network->weight[layer][neuron][w]);
 			}
 		}
 		// Save bias scale and quantized biases
 		fprintf(file, "%f\n", quantized_network->bias_scales[layer]);
 		for (int neuron = 0; neuron < network->width[layer]; neuron++) {
-			fprintf(file, "%d\n", quantized_network->quantized_biases[layer][neuron]);
+			fprintf(file, "%d\n", quantized_network->bias[layer][neuron]);
 		}
 	}
 	fclose(file);

@@ -367,11 +367,11 @@ float *nn_predict_quantized(nn_quantized_t *qmodel, float *input) {
 			// Dequantize weights and compute dot product
 			float sum = 0.0f;
 			for (int w = 0; w < original->width[layer - 1]; w++) {
-				float weight = qmodel->weight[layer][neuron][w] * qmodel->weight_scales[layer][neuron];
+				float weight = qmodel->weight[layer][neuron][w] * qmodel->weight_scale[layer][neuron];
 				sum += weight * activations[w];
 			}
 			// Dequantize bias
-			float bias = qmodel->bias[layer][neuron] * qmodel->bias_scales[layer];
+			float bias = qmodel->bias[layer][neuron] * qmodel->bias_scale[layer];
 			sum += bias;
 			// Bounds check activation type to prevent invalid access
 			if (original->activation[layer] < 0 || original->activation[layer] >= (int)(sizeof(activation_function)/sizeof(activation_function[0]))) {
@@ -459,14 +459,14 @@ int nn_save_quantized(nn_quantized_t *quantized_network, char *path)
 	for (int layer = 1; layer < network->depth; layer++) {
 		for (int neuron = 0; neuron < network->width[layer]; neuron++) {
 			// Save weight scale
-			fprintf(file, "%f\n", quantized_network->weight_scales[layer][neuron]);
+			fprintf(file, "%f\n", quantized_network->weight_scale[layer][neuron]);
 			// Save quantized weights
 			for (int w = 0; w < network->width[layer-1]; w++) {
 				fprintf(file, "%d\n", quantized_network->weight[layer][neuron][w]);
 			}
 		}
 		// Save bias scale and quantized biases
-		fprintf(file, "%f\n", quantized_network->bias_scales[layer]);
+		fprintf(file, "%f\n", quantized_network->bias_scale[layer]);
 		for (int neuron = 0; neuron < network->width[layer]; neuron++) {
 			fprintf(file, "%d\n", quantized_network->bias[layer][neuron]);
 		}
@@ -485,14 +485,14 @@ void nn_free_quantized(nn_quantized_t* quantized_network) {
 			free(quantized_network->weight[layer][neuron]);
 		}
 		free(quantized_network->weight[layer]);
-		free(quantized_network->weight_scales[layer]);
+		free(quantized_network->weight_scale[layer]);
 		free(quantized_network->bias[layer]);
 	}
 
 	free(quantized_network->weight);
-	free(quantized_network->weight_scales);
+	free(quantized_network->weight_scale);
 	free(quantized_network->bias);
-	free(quantized_network->bias_scales);
+	free(quantized_network->bias_scale);
 	free(quantized_network);
 }
 
@@ -533,19 +533,19 @@ nn_quantized_t* nn_load_quantized(const char* path) {
 	// Allocate quantization arrays
 	int max_layers = qmodel->original_network->depth;
 	qmodel->weight = malloc(sizeof(int8_t**) * max_layers);
-	qmodel->weight_scales = malloc(sizeof(float*) * max_layers);
+	qmodel->weight_scale = malloc(sizeof(float*) * max_layers);
 	qmodel->bias = malloc(sizeof(int8_t*) * max_layers);
-	qmodel->bias_scales = malloc(sizeof(float) * max_layers);
+	qmodel->bias_scale = malloc(sizeof(float) * max_layers);
 	// Read weights and biases for each layer
 	for (int layer = 1; layer < qmodel->original_network->depth; layer++) {
 		int curr_width = qmodel->original_network->width[layer];
 		int prev_width = qmodel->original_network->width[layer-1];
 		// Allocate weight storage
 		qmodel->weight[layer] = malloc(sizeof(int8_t*) * curr_width);
-		qmodel->weight_scales[layer] = malloc(sizeof(float) * curr_width);
+		qmodel->weight_scale[layer] = malloc(sizeof(float) * curr_width);
 		for (int neuron = 0; neuron < curr_width; neuron++) {
 			// Read weight scale
-			if (fscanf(file, "%f\n", &qmodel->weight_scales[layer][neuron]) != 1) {
+			if (fscanf(file, "%f\n", &qmodel->weight_scale[layer][neuron]) != 1) {
 				// Error reading scale
 				goto error;
 			}
@@ -559,7 +559,7 @@ nn_quantized_t* nn_load_quantized(const char* path) {
 			}
 		}
 		// Read bias scale
-		if (fscanf(file, "%f\n", &qmodel->bias_scales[layer]) != 1) {
+		if (fscanf(file, "%f\n", &qmodel->bias_scale[layer]) != 1) {
 			// Error reading bias scale
 			goto error;
 		}

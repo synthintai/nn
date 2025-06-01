@@ -32,7 +32,7 @@ static int8_t quantize_value(float value, float scale, float zero_point)
 			return (int8_t)round(quantized);
 }
 
-nn_quantized_t* nn_quantize(nn_t* network)
+nn_quantized_t *nn_quantize(nn_t* network)
 {
 	nn_quantized_t* quantized = malloc(sizeof(nn_quantized_t));
 	if (!quantized)
@@ -40,15 +40,15 @@ nn_quantized_t* nn_quantize(nn_t* network)
 	quantized->original_network = network;
 	// Allocate memory for quantized weights and scales
 	quantized->weight = malloc(sizeof(int8_t**) * network->depth);
-	quantized->weight_scales = malloc(sizeof(float*) * network->depth);
+	quantized->weight_scale = malloc(sizeof(float*) * network->depth);
 	quantized->bias = malloc(sizeof(int8_t*) * network->depth);
-	quantized->bias_scales = malloc(sizeof(float) * network->depth);
+	quantized->bias_scale = malloc(sizeof(float) * network->depth);
 	for (int layer = 1; layer < network->depth; layer++) {
 		int prev_width = network->width[layer-1];
 		int curr_width = network->width[layer];
 		// Allocate memory for this layer
 		quantized->weight[layer] = malloc(sizeof(int8_t*) * curr_width);
-		quantized->weight_scales[layer] = malloc(sizeof(float) * curr_width);
+		quantized->weight_scale[layer] = malloc(sizeof(float) * curr_width);
 		quantized->bias[layer] = malloc(sizeof(int8_t) * curr_width);
 		// Quantize weights for each neuron in this layer
 		for (int neuron = 0; neuron < curr_width; neuron++) {
@@ -58,7 +58,7 @@ nn_quantized_t* nn_quantize(nn_t* network)
 			find_layer_minmax(network->weight[layer][neuron], prev_width, &min_val, &max_val);
 			// Calculate scale and zero point for symmetric quantization
 			float scale = (float)fmax(fabs(min_val), fabs(max_val)) / 127.0f;
-			quantized->weight_scales[layer][neuron] = scale;
+			quantized->weight_scale[layer][neuron] = scale;
 			float zero_point = 0.0f;  // For symmetric quantization
 			// Quantize weights
 			for (int w = 0; w < prev_width; w++) {
@@ -70,7 +70,7 @@ nn_quantized_t* nn_quantize(nn_t* network)
 		// Calculate bias scale (handle zero bias case)
 		float max_bias_val = fabs(layer_bias);
 		float bias_scale = (max_bias_val < 1e-6f) ? 1.0f : (max_bias_val / 127.0f);
-		quantized->bias_scales[layer] = bias_scale;
+		quantized->bias_scale[layer] = bias_scale;
 		// Quantize the single bias value for the entire layer
 		int8_t bias = quantize_value(layer_bias, bias_scale, 0.0f);
 		// Assign same quantized bias to all neurons in this layer

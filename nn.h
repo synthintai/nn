@@ -48,9 +48,9 @@ typedef struct {
 
 typedef struct {
 	nn_t *original_network;
-	float *bias_scales;
+	float *bias_scale;
 	int8_t **bias;
-	float **weight_scales;
+	float **weight_scale;
 	int8_t ***weight;
 } nn_quantized_t;
 

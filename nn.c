@@ -331,6 +331,12 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 			nn->loss[i][j] = sum * activation_function[nn->activation[i]](nn->preact[i][j], true);
 		}
 	}
+	// Update biases (one step of gradient descent)
+	for (i = 1; i < nn->depth; i++) {
+	    for (j = 0; j < nn->width[i]; j++) {
+	        nn->bias[i][j] += nn->loss[i][j] * rate;
+	    }
+	}
 	// Calculate the weight adjustments - However, their update is delayed until after full backprop traversal.
 	// The weights cannot be updated while back-propagating, because back propagating each layer depends on the next layer's weights.
 	// So we save the weight adjustments in a temporary array and apply them all at once later.	

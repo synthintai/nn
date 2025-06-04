@@ -276,6 +276,8 @@ int nn_add_layer(nn_t *nn, int width, int activation)
 			for (int i = 0; i < nn->width[nn->depth - 2]; i++) {
 				nn->weight[nn->depth - 1][neuron][i] = sqrtf(6.0f / (nn->width[nn->depth - 1] + nn->width[nn->depth - 2])) * 2.0f * (rand() / (float)RAND_MAX - 0.5f);
 			}
+			// Set initial bias to zero for each neuron
+			nn->bias[nn->depth - 1][neuron] = 0;
 		}
 	}
 	return 0;

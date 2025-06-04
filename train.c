@@ -52,10 +52,10 @@ int main(void)
 		printf("Creating new model.\n");
 		nn = nn_init();
 		// Construct the neural network, layer by layer
-		nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, 0);
-		nn_add_layer(nn, 100, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
-		nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU, 0);
-		nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, 0);
+		nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE);
+		nn_add_layer(nn, 100, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU);
+		nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU);
+		nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID);
 	} else {
 		printf("Using existing model file\n");
 		if ((nn->width[0] != num_inputs) || (nn->width[nn->depth - 1] != num_outputs))

@@ -38,7 +38,7 @@ typedef struct {
 	uint32_t depth;		// Number of layers, including the input and the output layers
 	uint32_t *width;	// Number of neurons in each layer (can vary from layer to layer)
 	uint8_t *activation;// Activation function used for each layer (can be different for each layer)
-	float *bias;		// Biases by layer (each layer can have its own bias)
+	float **bias;		// Bias for each neuron
 	float **neuron;		// Output value for each neuron in each layer
 	float **loss;		// Error derivative for each neuron in each layer
 	float **preact;		// Neuron values before activation function is applied for each neuron in each layer
@@ -57,7 +57,7 @@ typedef struct {
 nn_t *nn_init(void);
 void nn_free(nn_t *nn);
 void nn_free_quantized(nn_quantized_t* quantized_network);
-int nn_add_layer(nn_t *nn, int width, int activation, float bias);
+int nn_add_layer(nn_t *nn, int width, int activation);
 int nn_save_model(nn_t *nn, char *path);
 int nn_save_quantized(nn_quantized_t *quantized_network, char *path);
 nn_t *nn_load_model(char *path);

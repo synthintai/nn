@@ -26,10 +26,9 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Failed to load model: %s\n", model);
 		return 1;
 	}
-	printf("Layer\tType\tWidth\tActvation\tBias\n");
+	printf("Layer\tType\tWidth\tActvation\n");
 	for (int i = 0; i < network->depth; i++) {
-		printf("%d\t%s\t%d\t%d\t%f\n", i, "dense", network->width[i], network->activation[i], network->bias[i]);
+		printf("%d\t%s\t%d\t%d\n", i, "dense", network->width[i], network->activation[i]);
 	}
 	return 0;
 }
-

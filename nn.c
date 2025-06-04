@@ -155,7 +155,7 @@ static void forward_propagation(nn_t *nn)
 			sum = 0;
 			for (k = 0; k < nn->width[i - 1]; k++)
 				sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
-			sum += nn->bias[i];
+			sum += nn->bias[i][j];
 			nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
 			// To improve efficiency, we cache the preactivation value of this neuron for later use in backpropagation
 			nn->preact[i][j] = sum;
@@ -196,6 +196,7 @@ void nn_free(nn_t *nn)
 		}
 		free(nn->weight[layer]);
 		free(nn->weight_adj[layer]);
+		free(nn->bias[layer]);
 	}
 	// There are no neurons in the input layer, as the input array itself is used to store these values.
 	for (layer = 1; layer < nn->depth; layer++) {
@@ -208,13 +209,12 @@ void nn_free(nn_t *nn)
 	free(nn->neuron);
 	free(nn->loss);
 	free(nn->preact);
-	free(nn->bias);
 	free(nn->activation);
 	free(nn->width);
 	free(nn);
 }
 
-int nn_add_layer(nn_t *nn, int width, int activation, float bias)
+int nn_add_layer(nn_t *nn, int width, int activation)
 {
 	nn->depth++;
 	nn->width = (uint32_t *)realloc(nn->width, nn->depth * sizeof(*nn->width));
@@ -225,10 +225,6 @@ int nn_add_layer(nn_t *nn, int width, int activation, float bias)
 	if (NULL == nn->activation)
 		return 1;
 	nn->activation[nn->depth - 1] = activation;
-	nn->bias = (float *)realloc(nn->bias, nn->depth * sizeof(*nn->bias));
-	if (NULL == nn->bias)
-		return 1;
-	nn->bias[nn->depth - 1] = bias;
 	nn->neuron = (float **)realloc(nn->neuron, nn->depth * sizeof(float *));
 	if (NULL == nn->neuron)
 		return 1;
@@ -255,12 +251,18 @@ int nn_add_layer(nn_t *nn, int width, int activation, float bias)
 	nn->weight_adj = (float ***)realloc(nn->weight_adj, (nn->depth) * sizeof(float **));
 	if (NULL == nn->weight_adj)
 		return 1;
+	nn->bias = (float **)realloc(nn->bias, (nn->depth) * sizeof(float *));
+	if (NULL == nn->bias)
+		return 1;
 	if (nn->depth > 1) {
 		nn->weight[nn->depth - 1] = (float **)malloc((nn->width[nn->depth - 1]) * sizeof(float *));
 		if (NULL == nn->weight[nn->depth - 1])
 			return 1;
 		nn->weight_adj[nn->depth - 1] = (float **)malloc((nn->width[nn->depth - 1]) * sizeof(float *));
 		if (NULL == nn->weight_adj[nn->depth - 1])
+			return 1;
+		nn->bias[nn->depth - 1] = (float *)malloc((nn->width[nn->depth - 1]) * sizeof(float));
+		if (NULL == nn->bias[nn->depth - 1])
 			return 1;
 		for (int neuron = 0; neuron < nn->width[nn->depth - 1]; neuron++) {
 			nn->weight[nn->depth - 1][neuron] = (float *)malloc((nn->width[nn->depth - 2]) * sizeof(float));
@@ -393,7 +395,6 @@ nn_t *nn_load_model(char *path)
 	nn_t *nn;
 	int width = 0;
 	int activation = ACTIVATION_FUNCTION_TYPE_NONE;
-	float bias = 0;
 	int layer, i, j;
 	int depth;
 
@@ -403,17 +404,29 @@ nn_t *nn_load_model(char *path)
 	nn = nn_init();
 	fscanf(file, "%d\n", &depth);
 	for (i = 0; i < depth; i++) {
-		fscanf(file, "%d %d %f\n", &width, &activation, &bias);
-		if (nn_add_layer(nn, width, activation, bias) != 0) {
+		fscanf(file, "%d %d\n", &width, &activation);
+		if (nn_add_layer(nn, width, activation) != 0) {
 			fclose(file);
 			return NULL;
 		}
 	}
 	// Read in the weights
-	for (layer = 1; layer < nn->depth; layer++)
-		for (i = 0; i < nn->width[layer]; i++)
-			for (j = 0; j < nn->width[layer - 1]; j++)
-				fscanf(file, "%f\n", &nn->weight[layer][i][j]);
+	for (layer = 1; layer < nn->depth; layer++) {
+		for (i = 0; i < nn->width[layer]; i++) {
+			for (j = 0; j < nn->width[layer - 1]; j++) {
+				if (fscanf(file, "%f\n", &nn->weight[layer][i][j]) != 1) {
+					fclose(file);
+					nn_free(nn);
+					return NULL;
+				}
+			}
+			if (fscanf(file, "%f\n", &nn->bias[layer][i]) != 1) {
+				fclose(file);
+				nn_free(nn);
+				return NULL;
+			}
+		}
+	}
 	fclose(file);
 	return nn;
 }
@@ -429,15 +442,18 @@ int nn_save_model(nn_t *nn, char *path)
 		return 1;
 	// File format:
 	// depth
-	// width, activation, bias
-	// weight
+	// width, activation
+	// {weight, bias}...
 	fprintf(file, "%" PRId32 "\n", nn->depth);
 	for (i = 0; i < nn->depth; i++)
-		fprintf(file, "%" PRId32 " %d %f\n", nn->width[i], nn->activation[i], nn->bias[i]);
-	for (layer = 1; layer < nn->depth; layer++)
-		for (i = 0; i < nn->width[layer]; i++)
+		fprintf(file, "%" PRId32 " %d\n", nn->width[i], nn->activation[i]);
+	for (layer = 1; layer < nn->depth; layer++) {
+		for (i = 0; i < nn->width[layer]; i++) {
 			for (j = 0; j < nn->width[layer - 1]; j++)
 				fprintf(file, "%f\n", nn->weight[layer][i][j]);
+ 			fprintf(file, "%f\n", nn->bias[layer][i]);
+		}
+	}
 	fclose(file);
 	return 0;
 }
@@ -453,7 +469,7 @@ int nn_save_quantized(nn_quantized_t *quantized_network, char *path)
 	// Save network architecture
 	fprintf(file, "%" PRId32 "\n", network->depth);
 	for (int i = 0; i < network->depth; i++) {
-		fprintf(file, "%" PRId32 " %d %f\n", network->width[i], network->activation[i], network->bias[i]);
+		fprintf(file, "%" PRId32 " %d\n", network->width[i], network->activation[i]);
 	}
 	// Save quantized weights and scales
 	for (int layer = 1; layer < network->depth; layer++) {
@@ -520,12 +536,11 @@ nn_quantized_t* nn_load_quantized(const char* path) {
 	// Read layer configurations
 	for (int i = 0; i < depth; i++) {
 		int width, activation;
-		float bias;
-		if (fscanf(file, "%d %d %f\n", &width, &activation, &bias) != 3) {
+		if (fscanf(file, "%d %d\n", &width, &activation) != 2) {
 			// Error reading layer i+1 configuration
 			goto error;
 		}
-		if (nn_add_layer(qmodel->original_network, width, activation, bias) != 0) {
+		if (nn_add_layer(qmodel->original_network, width, activation) != 0) {
 			// Error adding layer i+1
 			goto error;
 		}
@@ -534,8 +549,8 @@ nn_quantized_t* nn_load_quantized(const char* path) {
 	int max_layers = qmodel->original_network->depth;
 	qmodel->weight = malloc(sizeof(int8_t**) * max_layers);
 	qmodel->weight_scale = malloc(sizeof(float*) * max_layers);
-	qmodel->bias = malloc(sizeof(int8_t*) * max_layers);
-	qmodel->bias_scale = malloc(sizeof(float) * max_layers);
+	qmodel->bias = malloc(sizeof(int8_t**) * max_layers);
+	qmodel->bias_scale = malloc(sizeof(float*) * max_layers);
 	// Read weights and biases for each layer
 	for (int layer = 1; layer < qmodel->original_network->depth; layer++) {
 		int curr_width = qmodel->original_network->width[layer];

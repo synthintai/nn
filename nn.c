@@ -187,6 +187,14 @@ static void forward_propagation(nn_t *nn)
 
 // Public functions
 
+uint32_t nn_version(void)
+{
+    return ( (uint32_t)NN_VERSION_MAJOR << 24 ) |
+           ( (uint32_t)NN_VERSION_MINOR << 16 ) |
+           ( (uint32_t)NN_VERSION_PATCH <<  8 ) |
+             (uint32_t)NN_VERSION_BUILD;
+}
+
 nn_t *nn_init(void)
 {
     nn_t *nn = (nn_t *)malloc(sizeof(nn_t));
@@ -595,14 +603,6 @@ int nn_save_model(nn_t *nn, char *path)
 
     fclose(file);
     return 0;
-}
-
-uint32_t nn_version(void)
-{
-    return ( (uint32_t)NN_VERSION_MAJOR << 24 ) |
-           ( (uint32_t)NN_VERSION_MINOR << 16 ) |
-           ( (uint32_t)NN_VERSION_PATCH <<  8 ) |
-             (uint32_t)NN_VERSION_BUILD;
 }
 
 int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)

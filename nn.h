@@ -59,6 +59,7 @@ typedef struct {
 	};
 } nn_t;
 
+uint32_t nn_version(void);
 nn_t *nn_init(void);
 void nn_free(nn_t *nn);
 int nn_add_layer(nn_t *nn, int width, int activation);
@@ -67,7 +68,6 @@ nn_t *nn_load_model(char *path);
 float nn_error(nn_t *nn, float *inputs, float *targets);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);
-uint32_t nn_version(void);
 int nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
 float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);
 bool nn_prune_lightest_neuron(nn_t *nn);

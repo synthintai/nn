@@ -35,37 +35,38 @@ typedef enum {
 } pooling_type_t;
 
 typedef struct {
-	uint32_t depth;		// Number of layers, including the input and the output layers
-	uint32_t *width;	// Number of neurons in each layer (can vary from layer to layer)
-	uint8_t *activation;// Activation function used for each layer (can be different for each layer)
-	float **bias;		// Bias for each neuron
-	float **neuron;		// Output value for each neuron in each layer
-	float **loss;		// Error derivative for each neuron in each layer
-	float **preact;		// Neuron values before activation function is applied for each neuron in each layer
-	float ***weight;	// Weight of each neuron in each layer
-	float ***weight_adj;// Adjustment of each weight for each neuron in each layer
-} nn_t;
-
-typedef struct {
-	nn_t *original_network;
-	float *bias_scale;
-	int8_t **bias;
+	bool quantized;			// Indicates if the network is quantized
+	uint8_t version_major;	// Major version of the network model
+	uint8_t version_minor;	// Minor version of the network model
+	uint8_t version_patch;	// Patch level of the network model
+	uint8_t version_build;	// Build number of the network model
+	uint32_t depth;			// Number of layers, including the input and the output layers
+	uint32_t *width;		// Number of neurons in each layer (can vary from layer to layer)
+	uint8_t *activation;	// Activation function used for each layer (can be different for each layer)
+	float **neuron;			// Output value for each neuron in each layer
+	float **loss;			// Error derivative for each neuron in each layer
+	float **preact;			// Neuron values before activation function is applied for each neuron in each layer
 	float **weight_scale;
-	int8_t ***weight;
-} nn_quantized_t;
+	union {
+		int8_t ***weight_quantized;	// Quantized weight for each neuron in each layer
+		float ***weight;	// Weight for each neuron in each layer
+	};
+	float ***weight_adj;	// Adjustment of each weight for each neuron in each layer
+	float *bias_scale;
+	union {
+		int8_t **bias_quantized; // Quantized bias for each neuron
+		float **bias;		// Bias for each neuron
+	};
+} nn_t;
 
 nn_t *nn_init(void);
 void nn_free(nn_t *nn);
-void nn_free_quantized(nn_quantized_t* quantized_network);
 int nn_add_layer(nn_t *nn, int width, int activation);
 int nn_save_model(nn_t *nn, char *path);
-int nn_save_quantized(nn_quantized_t *quantized_network, char *path);
 nn_t *nn_load_model(char *path);
-nn_quantized_t* nn_load_quantized(const char* path);
 float nn_error(nn_t *nn, float *inputs, float *targets);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);
-float *nn_predict_quantized(nn_quantized_t* qmodel, float* input);
 uint32_t nn_version(void);
 int nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
 float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);

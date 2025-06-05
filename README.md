@@ -117,3 +117,21 @@ Copyright (c) 2019-2025 SynthInt Technologies, LLC. All rights reserved.
 
 Licensed under the [Apache License 2.0](./LICENSE).
 
+## TODO
+
+* Change quantize.c to handle weight_scale and bias_scale
+* Add weight_scale and bias_scale structs to free in nn.c
+* Add nn version info to summary
+* Run cppcheck and fix all errors and warnings from static analysis
+* Add ability to import/export model as a c header file (write import/export utility?)
+* Change nn_load to nn_load_model_file
+* Change nn_save to nn_save_model_file
+* Add nn_load_model_memory
+* Add nn_save_model_memory
+* Change pooling action to layer type that can be added to the model
+* Change conv2d action to layer type that can be added to the model
+* Add stride and padding parms to conv2d
+* If using padding: feature_map_size = (N-F+2*P)/(S+1) <--the 2P is the padding
+* Add dropout layer
+* How to handle back prop for pooling layer?
+* Number of kernels/filters dictates the number of output channels of a CNN layer

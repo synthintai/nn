@@ -121,7 +121,8 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 * Change quantize.c to handle weight_scale and bias_scale
 * Add weight_scale and bias_scale structs to free in nn.c
-* Add nn version info to summary
+* Add model version info to summary (and compare to current nn library version)
+* In summary program, print out the name of the activation function
 * Run cppcheck and fix all errors and warnings from static analysis
 * Add ability to import/export model as a c header file (write import/export utility?)
 * Change nn_load to nn_load_model_file
@@ -135,3 +136,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 * Add dropout layer
 * How to handle back prop for pooling layer?
 * Number of kernels/filters dictates the number of output channels of a CNN layer
+* Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
+* Support CNN layer types in add_layer(), forward_propagate(), and nn_train().
+* Add RNN feature

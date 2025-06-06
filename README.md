@@ -119,8 +119,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Change quantize.c to handle weight_scale and bias_scale
-* Add weight_scale and bias_scale structs to free in nn.c
 * Add model version info to summary (and compare to current nn library version)
 * In summary program, print out the name of the activation function
 * Run cppcheck and fix all errors and warnings from static analysis

@@ -119,7 +119,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Add model version info to summary (and compare to current nn library version)
 * In summary program, print out the name of the activation function
 * Run cppcheck and fix all errors and warnings from static analysis
 * Add ability to import/export model as a c header file (write import/export utility?)
@@ -137,3 +136,4 @@ Licensed under the [Apache License 2.0](./LICENSE).
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
 * Support CNN layer types in add_layer(), forward_propagate(), and nn_train().
 * Add RNN feature
+* Add ability to overtrain a quantized model (and converting it back to floating point).

@@ -9,15 +9,10 @@
 #include <stdint.h>
 #include "nn.h"
 
-void print_usage()
-{
-    printf("Usage: summary <model>\n");
-}
-
 int main(int argc, char *argv[])
 {
     if (argc != 2) {
-        print_usage();
+        printf("Usage: summary <model>\n");
         return 1;
     }
     char *model_path = argv[1];
@@ -26,24 +21,27 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Failed to load model: %s\n", model_path);
         return 1;
     }
-
-    // Print whether this is a floating‐point or quantized model
+    printf("Model Version:\t%u.%u.%u.%u\n",
+        (unsigned)network->version_major,
+        (unsigned)network->version_minor,
+        (unsigned)network->version_patch,
+        (unsigned)network->version_build
+    );
+    uint32_t lib_ver = nn_version();
+    unsigned lib_major = (lib_ver >> 24) & 0xFF;
+    unsigned lib_minor = (lib_ver >> 16) & 0xFF;
+    unsigned lib_patch = (lib_ver >>  8) & 0xFF;
+    unsigned lib_build =  lib_ver        & 0xFF;
+    printf("NN Lib Version:\t%u.%u.%u.%u\n", lib_major, lib_minor, lib_patch, lib_build);
     if (network->quantized) {
-        printf("Model Type:\tQuantized (fixed‐point int8)\n");
+        printf("Model Type:\tQuantized (fixed-point int8)\n");
     } else {
-        printf("Model Type:\tFloating‐point\n");
+        printf("Model Type:\tFloating-point\n");
     }
-
     printf("Layer\tType\tWidth\tActivation\n");
     for (int i = 0; i < network->depth; i++) {
-        printf("%d\t%s\t%d\t%d\n",
-            i,
-            "dense",
-            (int)network->width[i],
-            (int)network->activation[i]
-        );
+        printf("%d\t%s\t%u\t%u\n", i, "dense", network->width[i], network->activation[i]);
     }
-
     nn_free(network);
     return 0;
 }

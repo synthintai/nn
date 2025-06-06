@@ -9,6 +9,20 @@
 #include <stdint.h>
 #include "nn.h"
 
+// Activation‐function names must exactly match the enum in nn.h
+static const char *activation_names[] = {
+    "NONE",
+    "LINEAR",
+    "RELU",
+    "LEAKY_RELU",
+    "ELU",
+    "THRESHOLD",
+    "SIGMOID",
+    "SIGMOID_FAST",
+    "TANH",
+    "TANH_FAST"
+};
+
 int main(int argc, char *argv[])
 {
     if (argc != 2) {
@@ -40,7 +54,12 @@ int main(int argc, char *argv[])
     }
     printf("Layer\tType\tWidth\tActivation\n");
     for (int i = 0; i < network->depth; i++) {
-        printf("%d\t%s\t%u\t%u\n", i, "dense", network->width[i], network->activation[i]);
+        const char *act_name = "UNKNOWN";
+        uint8_t act_code = network->activation[i];
+        if (act_code < (sizeof(activation_names)/sizeof(activation_names[0]))) {
+            act_name = activation_names[act_code];
+        }
+        printf("%d\t%s\t%u\t%s\n", i, "dense", network->width[i], act_name);
     }
     nn_free(network);
     return 0;

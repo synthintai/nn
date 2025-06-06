@@ -119,7 +119,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* In summary program, print out the name of the activation function
 * Run cppcheck and fix all errors and warnings from static analysis
 * Add ability to import/export model as a c header file (write import/export utility?)
 * Change nn_load to nn_load_model_file

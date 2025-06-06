@@ -818,59 +818,155 @@ int nn_save_model(nn_t *nn, char *path)
 
 int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
 {
-    if (nn == NULL || layer <= 0 || layer >= (int)nn->depth || neuron_index < 0 || neuron_index >= (int)nn->width[layer]) {
+    if (nn == NULL
+     || layer <= 0
+     || layer >= (int)nn->depth
+     || neuron_index < 0
+     || neuron_index >= (int)nn->width[layer]) {
         return 1; // Invalid parameters
     }
 
-    // Shift neuron, preact, loss arrays in this layer
+    int old_width = nn->width[layer];
+
+    // 1) Shift out neuron / preact / loss in this layer
     memmove(&nn->neuron[layer][neuron_index],
             &nn->neuron[layer][neuron_index + 1],
-            sizeof(float) * (nn->width[layer] - neuron_index - 1));
+            sizeof(float) * (old_width - neuron_index - 1));
     memmove(&nn->preact[layer][neuron_index],
             &nn->preact[layer][neuron_index + 1],
-            sizeof(float) * (nn->width[layer] - neuron_index - 1));
+            sizeof(float) * (old_width - neuron_index - 1));
     memmove(&nn->loss[layer][neuron_index],
             &nn->loss[layer][neuron_index + 1],
-            sizeof(float) * (nn->width[layer] - neuron_index - 1));
+            sizeof(float) * (old_width - neuron_index - 1));
 
-    // Free the weight & weight_adj arrays belonging to the removed neuron
-    free(nn->weight[layer][neuron_index]);
-    free(nn->weight_adj[layer][neuron_index]);
+    // 2) Free exactly one removed‐neuron row (weights and weight_adj)
+    if (nn->quantized) {
+        // --- QUANTIZED mode ---
+        // Free the int8_t row of input‐weights for this neuron:
+        free(nn->weight_quantized[layer][neuron_index]);
+        // Do NOT free bias_quantized[layer][neuron_index] here!
+        // Instead, we will shift the entire bias_quantized[layer] array and then realloc it below.
+    }
+    else {
+        // --- FLOAT mode ---
+        free(nn->weight[layer][neuron_index]);       // free that float‐weights row
+        free(nn->weight_adj[layer][neuron_index]);   // free that float‐adj row
+    }
 
-    // Shift the pointers in this layer's weight & weight_adj arrays
-    memmove(&nn->weight[layer][neuron_index],
-            &nn->weight[layer][neuron_index + 1],
-            sizeof(float *) * (nn->width[layer] - neuron_index - 1));
-    memmove(&nn->weight_adj[layer][neuron_index],
-            &nn->weight_adj[layer][neuron_index + 1],
-            sizeof(float *) * (nn->width[layer] - neuron_index - 1));
+    // 3) Shift pointers / elements within this layer
+    if (nn->quantized) {
+        // 3a) Shift pointer array for weight_quantized[layer]:
+        memmove(&nn->weight_quantized[layer][neuron_index],
+                &nn->weight_quantized[layer][neuron_index + 1],
+                sizeof(int8_t *) * (old_width - neuron_index - 1));
 
-    // Shrink the arrays for this layer
-    nn->neuron[layer]     = (float *)realloc(nn->neuron[layer],     sizeof(float) * (nn->width[layer] - 1));
-    nn->preact[layer]     = (float *)realloc(nn->preact[layer],     sizeof(float) * (nn->width[layer] - 1));
-    nn->loss[layer]       = (float *)realloc(nn->loss[layer],       sizeof(float) * (nn->width[layer] - 1));
-    nn->weight[layer]     = (float **)realloc(nn->weight[layer],     sizeof(float *) * (nn->width[layer] - 1));
-    nn->weight_adj[layer] = (float **)realloc(nn->weight_adj[layer], sizeof(float *) * (nn->width[layer] - 1));
+        // 3b) Shift the single‐byte biases in bias_quantized[layer]:
+        memmove(&nn->bias_quantized[layer][neuron_index],
+                &nn->bias_quantized[layer][neuron_index + 1],
+                sizeof(int8_t) * (old_width - neuron_index - 1));
 
-    // Update next layer's weights to remove the input connection from this neuron
+        // Leave bias_scale[layer] alone (it’s a single float per layer).
+
+        // The float‐side arrays (weight[layer], weight_adj[layer], bias[layer]) are NULL here,
+        // so we must NOT touch them in quantized mode.
+
+    }
+    else {
+        // 3c) SHIFT float pointers for weight[layer] and weight_adj[layer]:
+        memmove(&nn->weight[layer][neuron_index],
+                &nn->weight[layer][neuron_index + 1],
+                sizeof(float *) * (old_width - neuron_index - 1));
+        memmove(&nn->weight_adj[layer][neuron_index],
+                &nn->weight_adj[layer][neuron_index + 1],
+                sizeof(float *) * (old_width - neuron_index - 1));
+
+        // 3d) Shift the float biases in bias[layer]:
+        memmove(&nn->bias[layer][neuron_index],
+                &nn->bias[layer][neuron_index + 1],
+                sizeof(float) * (old_width - neuron_index - 1));
+    }
+
+    // 4) Realloc every array in this layer:
+    if (nn->quantized) {
+        // Shrink weight_quantized[layer] (pointer‐to‐pointer):
+        nn->weight_quantized[layer] = (int8_t **)realloc(
+            nn->weight_quantized[layer],
+            sizeof(int8_t *) * (old_width - 1)
+        );
+
+        // Shrink the 1‐D bias array bias_quantized[layer]:
+        nn->bias_quantized[layer] = (int8_t *)realloc(
+            nn->bias_quantized[layer],
+            sizeof(int8_t) * (old_width - 1)
+        );
+
+        // bias_scale[layer] remains a single float, so no realloc.
+    }
+    else {
+        // Shrink weight[layer] pointer array:
+        nn->weight[layer] = (float **)realloc(
+            nn->weight[layer],
+            sizeof(float *) * (old_width - 1)
+        );
+        // Shrink weight_adj[layer] pointer array:
+        nn->weight_adj[layer] = (float **)realloc(
+            nn->weight_adj[layer],
+            sizeof(float *) * (old_width - 1)
+        );
+        // Shrink the float bias array bias[layer]:
+        nn->bias[layer] = (float *)realloc(
+            nn->bias[layer],
+            sizeof(float) * (old_width - 1)
+        );
+    }
+
+    // 5) Update next layer's weights to remove the input connection from this neuron
     if (layer + 1 < (int)nn->depth) {
-        for (int i = 0; i < (int)nn->width[layer + 1]; i++) {
-            // Shift left the weights and weight_adj for next layer
-            memmove(&nn->weight[layer + 1][i][neuron_index],
-                    &nn->weight[layer + 1][i][neuron_index + 1],
-                    sizeof(float) * (nn->width[layer] - neuron_index - 1));
-            memmove(&nn->weight_adj[layer + 1][i][neuron_index],
-                    &nn->weight_adj[layer + 1][i][neuron_index + 1],
-                    sizeof(float) * (nn->width[layer] - neuron_index - 1));
+        int old_prev_width = old_width;
+        int next_width     = nn->width[layer + 1];
 
-            // Shrink each row in next layer
-            nn->weight[layer + 1][i]     = (float *)realloc(nn->weight[layer + 1][i],     sizeof(float) * (nn->width[layer] - 1));
-            nn->weight_adj[layer + 1][i] = (float *)realloc(nn->weight_adj[layer + 1][i], sizeof(float) * (nn->width[layer] - 1));
+        for (int i = 0; i < next_width; i++) {
+            if (nn->quantized) {
+                // Shift out column “neuron_index” from each int8 row
+                memmove(&nn->weight_quantized[layer + 1][i][neuron_index],
+                        &nn->weight_quantized[layer + 1][i][neuron_index + 1],
+                        sizeof(int8_t) * (old_prev_width - neuron_index - 1));
+
+                // Now shrink that row to (old_prev_width - 1) bytes:
+                nn->weight_quantized[layer + 1][i] = (int8_t *)realloc(
+                    nn->weight_quantized[layer + 1][i],
+                    sizeof(int8_t) * (old_prev_width - 1)
+                );
+
+                // Do NOT touch any biases in layer+1.
+
+            } else {
+                // Shift out column “neuron_index” from each float row
+                memmove(&nn->weight[layer + 1][i][neuron_index],
+                        &nn->weight[layer + 1][i][neuron_index + 1],
+                        sizeof(float) * (old_prev_width - neuron_index - 1));
+                // Shrink that row to (old_prev_width - 1) floats
+                nn->weight[layer + 1][i] = (float *)realloc(
+                    nn->weight[layer + 1][i],
+                    sizeof(float) * (old_prev_width - 1)
+                );
+
+                // Also shift & shrink weight_adj[row]
+                memmove(&nn->weight_adj[layer + 1][i][neuron_index],
+                        &nn->weight_adj[layer + 1][i][neuron_index + 1],
+                        sizeof(float) * (old_prev_width - neuron_index - 1));
+                nn->weight_adj[layer + 1][i] = (float *)realloc(
+                    nn->weight_adj[layer + 1][i],
+                    sizeof(float) * (old_prev_width - 1)
+                );
+
+                // Do NOT touch any biases in layer+1.
+            }
         }
     }
 
-    // Finally, decrement the width of this layer
-    nn->width[layer] -= 1;
+    // 6) Finally, decrement the width of this layer
+    nn->width[layer] = old_width - 1;
     return 0;
 }
 
@@ -889,15 +985,27 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
 
     float total = 0.0f;
 
-    // Sum absolute values of input weights (previous layer → this neuron)
+    // Sum absolute values of input weights (previous layer to this neuron)
     for (int i = 0; i < (int)nn->width[layer - 1]; i++) {
-        total += fabsf(nn->weight[layer][neuron_index][i]);
+        if (nn->quantized) {
+            // For quantized models, we use the quantized weights
+            total += fabsf((float)nn->weight_quantized[layer][neuron_index][i] * nn->weight_scale[layer][neuron_index]);
+        } else {
+            // For float models, we use the float weights directly
+            total += fabsf(nn->weight[layer][neuron_index][i]);
+        }
     }
 
-    // Sum absolute values of output weights (this neuron → next layer)
+    // Sum absolute values of output weights (this neuron to next layer)
     if (layer + 1 < (int)nn->depth) {
         for (int i = 0; i < (int)nn->width[layer + 1]; i++) {
-            total += fabsf(nn->weight[layer + 1][i][neuron_index]);
+            if (nn->quantized) {
+                // For quantized models, we use the quantized weights
+                total += fabsf((float)nn->weight_quantized[layer + 1][i][neuron_index] * nn->weight_scale[layer + 1][i]);
+            } else {
+                // For float models, we use the float weights directly
+                total += fabsf(nn->weight[layer + 1][i][neuron_index]);
+            }
         }
     }
 

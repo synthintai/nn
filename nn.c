@@ -528,6 +528,17 @@ nn_t *nn_load_model(char *path)
     }
     nn->quantized = (quant_flag != 0);
 
+    // 1a) Read model version, use %hhu since version_* are uint8_t.
+    if (fscanf(file, "%hhu %hhu %hhu %hhu\n",
+               &nn->version_major,
+               &nn->version_minor,
+               &nn->version_patch,
+               &nn->version_build) != 4) {
+        fclose(file);
+        nn_free(nn);
+        return NULL;
+    }
+
     // 2) Read depth
     int depth = 0;
     if (fscanf(file, "%d\n", &depth) != 1) {
@@ -774,6 +785,8 @@ int nn_save_model(nn_t *nn, char *path)
 
     // 1) Write quantized flag: 0 = floating, 1 = fixed‐point
     fprintf(file, "%d\n", nn->quantized ? 1 : 0);
+    // 1a) Write model version (major, minor, patch, build)
+    fprintf(file, "%hhu %hhu %hhu %hhu\n", nn->version_major, nn->version_minor, nn->version_patch, nn->version_build);
     // 2) Write depth
     fprintf(file, "%" PRId32 "\n", nn->depth);
     // Write each layer's (width, activation)

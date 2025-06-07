@@ -9,50 +9,50 @@
 #define NN_H
 
 // NN API Version
-#define NN_VERSION_MAJOR	0
-#define NN_VERSION_MINOR	1
-#define NN_VERSION_PATCH	4
-#define NN_VERSION_BUILD	0
+#define NN_VERSION_MAJOR 0
+#define NN_VERSION_MINOR 1
+#define NN_VERSION_PATCH 4
+#define NN_VERSION_BUILD 0
 
 typedef enum {
-	ACTIVATION_FUNCTION_TYPE_NONE = 0,
-	ACTIVATION_FUNCTION_TYPE_LINEAR,
-	ACTIVATION_FUNCTION_TYPE_RELU,
-	ACTIVATION_FUNCTION_TYPE_LEAKY_RELU,
-	ACTIVATION_FUNCTION_TYPE_ELU,
-	ACTIVATION_FUNCTION_TYPE_THRESHOLD,
-	ACTIVATION_FUNCTION_TYPE_SIGMOID,
-	ACTIVATION_FUNCTION_TYPE_SIGMOID_FAST,
-	ACTIVATION_FUNCTION_TYPE_TANH,
-	ACTIVATION_FUNCTION_TYPE_TANH_FAST
+  ACTIVATION_FUNCTION_TYPE_NONE = 0,
+  ACTIVATION_FUNCTION_TYPE_LINEAR,
+  ACTIVATION_FUNCTION_TYPE_RELU,
+  ACTIVATION_FUNCTION_TYPE_LEAKY_RELU,
+  ACTIVATION_FUNCTION_TYPE_ELU,
+  ACTIVATION_FUNCTION_TYPE_THRESHOLD,
+  ACTIVATION_FUNCTION_TYPE_SIGMOID,
+  ACTIVATION_FUNCTION_TYPE_SIGMOID_FAST,
+  ACTIVATION_FUNCTION_TYPE_TANH,
+  ACTIVATION_FUNCTION_TYPE_TANH_FAST
 } activation_function_type_t;
 
 typedef enum {
-	POOLING_TYPE_NONE = 0,
-	POOLING_TYPE_MIN,
-	POOLING_TYPE_MAX,
-	POOLING_TYPE_AVG,
+  POOLING_TYPE_NONE = 0,
+  POOLING_TYPE_MIN,
+  POOLING_TYPE_MAX,
+  POOLING_TYPE_AVG,
 } pooling_type_t;
 
 typedef struct {
-	bool quantized;			// Indicates if the network is quantized
-	uint8_t version_major;	// Major version of the network model
-	uint8_t version_minor;	// Minor version of the network model
-	uint8_t version_patch;	// Patch level of the network model
-	uint8_t version_build;	// Build number of the network model
-	uint32_t depth;			// Number of layers, including the input and the output layers
-	uint32_t *width;		// Number of neurons in each layer (can vary from layer to layer)
-	uint8_t *activation;	// Activation function used for each layer (can be different for each layer)
-	float **neuron;			// Output value for each neuron in each layer
-	float **loss;			// Error derivative for each neuron in each layer
-	float **preact;			// Neuron values before activation function is applied for each neuron in each layer
-	float **weight_scale;
-	float ***weight;		// Weight for each neuron in each layer
-	int8_t ***weight_quantized;	// Quantized weight for each neuron in each layer
-	float ***weight_adj;	// Adjustment of each weight for each neuron in each layer
-	float *bias_scale;
-	float **bias;			// Bias for each neuron
-	int8_t **bias_quantized; // Quantized bias for each neuron
+  bool quantized;         // Indicates if the network is quantized
+  uint8_t version_major;  // Major version of the network model
+  uint8_t version_minor;  // Minor version of the network model
+  uint8_t version_patch;  // Patch level of the network model
+  uint8_t version_build;  // Build number of the network model
+  uint32_t depth;         // Number of layers, including the input and the output layers
+  uint32_t *width;        // Number of neurons in each layer (can vary from layer to layer)
+  uint8_t *activation;    // Activation function used for each layer
+  float **neuron;         // Output value for each neuron in each layer
+  float **loss;           // Error derivative for each neuron in each layer
+  float **preact;         // Neuron values before activation function is applied for each neuron in each layer
+  float **weight_scale;
+  float ***weight;        // Weight for each neuron in each layer
+  int8_t ***weight_quantized; // Quantized weight for each neuron in each layer
+  float ***weight_adj;    // Adjustment of each weight for each neuron in each layer
+  float *bias_scale;
+  float **bias;           // Bias for each neuron
+  int8_t **bias_quantized;// Quantized bias for each neuron
 } nn_t;
 
 uint32_t nn_version(void);

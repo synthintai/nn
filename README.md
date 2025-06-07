@@ -131,4 +131,3 @@ Licensed under the [Apache License 2.0](./LICENSE).
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
 * Support CNN layer types in add_layer(), forward_propagate(), and nn_train().
 * Add RNN feature
-* Add ability to overtrain a quantized model (and converting it back to floating point).

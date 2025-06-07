@@ -1409,7 +1409,7 @@ int nn_quantize(nn_t *nn)
     nn->weight_scale    [0] = NULL;
     nn->bias_quantized  [0] = NULL;
     nn->bias_scale      [0] = 0.0f;
-    // 3) Quantize each layer ≥1
+    // 3) Quantize each layer > 1
     for (int L = 1; L < depth; L++) {
         int prev_w = nn->width[L - 1];
         int curr_w = nn->width[L];
@@ -1464,11 +1464,14 @@ int nn_quantize(nn_t *nn)
         int wcount = (int)nn->width[L];
         for (int n = 0; n < wcount; n++) {
             free(nn->weight[L][n]);
+            free(nn->weight_adj[L][n]);
         }
         free(nn->weight[L]);
+        free(nn->weight_adj[L]);
         free(nn->bias[L]);
     }
     free(nn->weight);
+    free(nn->weight_adj);
     free(nn->bias);
     return 0;
 }

@@ -5,7 +5,7 @@ STAMP       := .split.stamp
 
 .PHONY: all clean
 
-all:	export import train test predict quantize prune summary libnn.a libnn.so $(CSV_OUTPUTS)
+all:	export import train test predict quantize dequantize prune summary libnn.a libnn.so $(CSV_OUTPUTS)
 
 libnn.a: nn.o data_prep.o
 	$(RM) $@
@@ -34,7 +34,6 @@ train: train.c libnn.a
 test: test.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-
 predict: predict.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
@@ -47,6 +46,9 @@ summary: summary.c libnn.a
 quantize: quantize.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
+dequantize: dequantize.c libnn.a
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
 $(CSV_OUTPUTS)&: samples.csv split.py
 	python split.py
 
@@ -57,4 +59,4 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o libnn.a libnn.so export import train test predict quantize prune summary model.* tags $(CSV_OUTPUTS)
+	$(RM) data_prep.o nn.o libnn.a libnn.so export import train test predict quantize dequantize prune summary model.* tags $(CSV_OUTPUTS)

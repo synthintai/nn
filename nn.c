@@ -429,8 +429,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
     int i, j, k;
 
     if (nn->quantized) {
-        // Error: Cannot train a quantized network
-        return -1.0f;
+        // Cannot train a quantized network, so convert to a floating point model first.
+        nn_dequantize(nn);
     }
 
     // 1) Forward pass
@@ -1392,12 +1392,9 @@ int nn_quantize(nn_t *nn)
         // nothing to do
         return -1;
     }
-
     const int depth = (int)nn->depth;
-
     // 1) Mark the network as quantized
     nn->quantized = true;
-
     // 2) Allocate quantization arrays in the union fields
     nn->weight_quantized = malloc(depth * sizeof(int8_t **));
     nn->weight_scale     = malloc(depth * sizeof(float   *));
@@ -1407,18 +1404,15 @@ int nn_quantize(nn_t *nn)
         !nn->bias_quantized   || !nn->bias_scale) {
         return -1;
     }
-
     // Initialize layer 0 entries
     nn->weight_quantized[0] = NULL;
     nn->weight_scale    [0] = NULL;
     nn->bias_quantized  [0] = NULL;
     nn->bias_scale      [0] = 0.0f;
-
     // 3) Quantize each layer ≥1
     for (int L = 1; L < depth; L++) {
         int prev_w = nn->width[L - 1];
         int curr_w = nn->width[L];
-
         // a) Allocate per-layer arrays
         nn->weight_quantized[L] = malloc(curr_w * sizeof(int8_t *));
         nn->weight_scale    [L] = malloc(curr_w * sizeof(float));
@@ -1426,7 +1420,6 @@ int nn_quantize(nn_t *nn)
         if (!nn->weight_quantized[L] || !nn->weight_scale[L] || !nn->bias_quantized[L]) {
             return -1;
         }
-
         // b) Compute one bias_scale for this layer
         float min_b = nn->bias[L][0], max_b = min_b;
         for (int i = 1; i < curr_w; i++) {
@@ -1437,14 +1430,12 @@ int nn_quantize(nn_t *nn)
         float layer_bias_scale = fmaxf(fabsf(min_b), fabsf(max_b)) / 127.0f;
         if (layer_bias_scale == 0.0f) layer_bias_scale = 1e-8f;
         nn->bias_scale[L] = layer_bias_scale;
-
         // c) For each neuron in this layer:
         for (int n = 0; n < curr_w; n++) {
             // c1) Allocate the int8 weight-vector
             nn->weight_quantized[L][n] = malloc(prev_w * sizeof(int8_t));
             if (!nn->weight_quantized[L][n])
                 return -1;
-
             // c2) Compute per-neuron weight scale
             float min_w = nn->weight[L][n][0], max_w = min_w;
             for (int k = 1; k < prev_w; k++) {
@@ -1455,7 +1446,6 @@ int nn_quantize(nn_t *nn)
             float neuron_scale = fmaxf(fabsf(min_w), fabsf(max_w)) / 127.0f;
             if (neuron_scale == 0.0f) neuron_scale = 1e-8f;
             nn->weight_scale[L][n] = neuron_scale;
-
             // c3) Quantize each weight
             for (int k = 0; k < prev_w; k++) {
                 float orig = nn->weight[L][n][k];
@@ -1463,14 +1453,12 @@ int nn_quantize(nn_t *nn)
                 nn->weight_quantized[L][n][k] =
                     (q > 127 ? 127 : (q < -128 ? -128 : q));
             }
-
             // c4) Quantize the bias
             float borig = nn->bias[L][n];
             int8_t bq = (int8_t)lroundf(borig / layer_bias_scale);
             nn->bias_quantized[L][n] = (bq > 127 ? 127 : (bq < -128 ? -128 : bq));
         }
     }
-
     // 4) Free all of the original float-side storage AFTER quantization
     for (int L = 1; L < depth; L++) {
         int wcount = (int)nn->width[L];
@@ -1482,6 +1470,68 @@ int nn_quantize(nn_t *nn)
     }
     free(nn->weight);
     free(nn->bias);
+    return 0;
+}
 
+// Dequantize in-place: rebuild float weights/biases from the fixed-point model.
+// Returns 0 on success, -1 on error.
+// Dequantize in-place: rebuild float weights/biases from the fixed-point model.
+// Returns 0 on success, -1 on error.
+int nn_dequantize(nn_t *nn)
+{
+    if (!nn || !nn->quantized) {
+        return -1;
+    }
+    const int depth = (int)nn->depth;
+    // 1) Allocate top-level float pointers
+    nn->weight     = malloc(depth * sizeof(*nn->weight));
+    nn->weight_adj = malloc(depth * sizeof(*nn->weight_adj));
+    nn->bias       = malloc(depth * sizeof(*nn->bias));
+    if (!nn->weight || !nn->weight_adj || !nn->bias) {
+        return -1;
+    }
+    // 2) For each layer >=1, rebuild float weight, weight_adj, bias
+    for (int L = 1; L < depth; L++) {
+        int curr = (int)nn->width[L];
+        int prev = (int)nn->width[L-1];
+        // a) Allocate per-layer pointer arrays
+        nn->weight[L]     = malloc(curr * sizeof(*nn->weight[L]));
+        nn->weight_adj[L] = malloc(curr * sizeof(*nn->weight_adj[L]));
+        nn->bias[L]       = malloc(curr * sizeof(*nn->bias[L]));
+        if (!nn->weight[L] || !nn->weight_adj[L] || !nn->bias[L]) {
+            return -1;
+        }
+        // b) For each neuron, allocate its float row, fill from quantized
+        for (int i = 0; i < curr; i++) {
+            // allocate float-weight row and float-weight_adj row
+            nn->weight[L][i]     = malloc(prev * sizeof(*nn->weight[L][i]));
+            nn->weight_adj[L][i] = malloc(prev * sizeof(*nn->weight_adj[L][i]));
+            if (!nn->weight[L][i] || !nn->weight_adj[L][i]) {
+                return -1;
+            }
+            // dequantize each weight
+            float wscale = nn->weight_scale[L][i];
+            for (int j = 0; j < prev; j++) {
+                nn->weight[L][i][j] = nn->weight_quantized[L][i][j] * wscale;
+                // weight_adj was never meaningful in quantized mode, zero it
+                nn->weight_adj[L][i][j] = 0.0f;
+            }
+            // dequantize bias
+            nn->bias[L][i] = nn->bias_quantized[L][i] * nn->bias_scale[L];
+            // free the now-unused row of quantized weights
+            free(nn->weight_quantized[L][i]);
+        }
+        // c) free per-layer quant arrays
+        free(nn->weight_quantized[L]);
+        free(nn->weight_scale[L]);
+        free(nn->bias_quantized[L]);
+    }
+    // 3) free top-level quant pointers
+    free(nn->weight_quantized);
+    free(nn->weight_scale);
+    free(nn->bias_quantized);
+    free(nn->bias_scale);
+    // 4) mark as float mode
+    nn->quantized = false;
     return 0;
 }

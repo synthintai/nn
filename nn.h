@@ -11,8 +11,8 @@
 // NN API Version
 #define NN_VERSION_MAJOR	0
 #define NN_VERSION_MINOR	1
-#define NN_VERSION_PATCH	3
-#define NN_VERSION_BUILD	2
+#define NN_VERSION_PATCH	4
+#define NN_VERSION_BUILD	0
 
 typedef enum {
 	ACTIVATION_FUNCTION_TYPE_NONE = 0,
@@ -63,8 +63,10 @@ uint32_t nn_version(void);
 nn_t *nn_init(void);
 void nn_free(nn_t *nn);
 int nn_add_layer(nn_t *nn, int width, int activation);
-int nn_save_model(nn_t *nn, char *path);
-nn_t *nn_load_model(char *path);
+int nn_save_model_ascii(nn_t *nn, const char *path);
+int nn_save_model_binary(nn_t *nn, const char *path);
+nn_t *nn_load_model_ascii(const char *path);
+nn_t *nn_load_model_binary(const char *path);
 float nn_error(nn_t *nn, float *inputs, float *targets);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);

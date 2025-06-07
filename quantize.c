@@ -21,13 +21,6 @@
 #include <float.h>
 #include "nn.h"
 
-void print_usage()
-{
-    printf("Usage: quantize <input_model> <output_model>\n");
-    printf("  input_model:  path to the floating‐point neural network model\n");
-    printf("  output_model: path where to save the quantized model\n");
-}
-
 //----------------------------------------------------------------
 // Helper: Find minimum and maximum in a float array of length size.
 //----------------------------------------------------------------
@@ -44,7 +37,7 @@ static void find_minmax(float *values, int size, float *min_val, float *max_val)
 //----------------------------------------------------------------
 // Helper: Symmetric quantization of a single float value to int8.
 //   value      : original float
-//   scale      : floating‐point scale (max_abs / 127)
+//   scale      : floating point scale (max_abs / 127)
 //   zero_point : typically 0 for symmetric quant.
 // Returns: clamped int8 in [‐128, +127].
 //----------------------------------------------------------------
@@ -57,7 +50,7 @@ static int8_t quantize_value(float value, float scale, float zero_point)
 }
 
 //----------------------------------------------------------------
-// Create a brand‐new nn_t that holds quantized weights/biases
+// Create a new nn_t that holds quantized weights/biases
 // copied from `network`. We set `quantized = true` and fill
 // weight_quantized, weight_scale, bias_quantized, bias_scale.
 // Note: We copy only depth, width[], activation[], and quant fields.
@@ -260,6 +253,9 @@ static int save_quantized_model(const nn_t *qnet, const char *path)
     // 1) Write quantized flag (always 1 for a quantized model)
     fprintf(fp, "1\n");
 
+    // 1a) Write model version (major, minor, patch, build)
+    fprintf(fp, "%hhu %hhu %hhu %hhu\n", qnet->version_major, qnet->version_minor, qnet->version_patch, qnet->version_build);
+
     // 2) Write depth
     fprintf(fp, "%d\n", qnet->depth);
 
@@ -336,7 +332,9 @@ static void free_quantized_network(nn_t *qnet)
 int main(int argc, char *argv[])
 {
     if (argc != 3) {
-        print_usage();
+        printf("Usage: %s <input_model> <output_model>\n", argv[0]);
+        printf("  input_model:  path to the floating point neural network model\n");
+        printf("  output_model: path where to save the quantized model\n");
         return 1;
     }
 
@@ -344,7 +342,7 @@ int main(int argc, char *argv[])
     const char *output_model = argv[2];
 
     // 1) Load the original floating‐point network
-    nn_t *network = nn_load_model((char *)input_model);
+    nn_t *network = nn_load_model_ascii((char *)input_model);
     if (!network) {
         fprintf(stderr, "Failed to load input model: %s\n", input_model);
         return 1;

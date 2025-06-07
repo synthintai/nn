@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <time.h>
 #include "nn.h"
 #include "data_prep.h"
@@ -59,7 +60,7 @@ int main(int argc, char *argv[])
     }
 
     // Attempt to load an existing model
-    nn = nn_load_model((char *)model_path);
+    nn = nn_load_model_ascii((char *)model_path);
     if (nn == NULL) {
         printf("Creating new model.\n");
         nn = nn_init();
@@ -118,7 +119,7 @@ int main(int argc, char *argv[])
         learning_rate *= annealing;
 
         // Save the neural network architecture and weights to the specified file
-        nn_save_model(nn, (char *)model_path);
+        nn_save_model_ascii(nn, (char *)model_path);
     }
 
     data_free(validation_data);

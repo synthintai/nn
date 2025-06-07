@@ -495,20 +495,19 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
     return nn_error(nn, inputs, targets);
 }
 
-// Returns an output prediction given an input
+// Returns an output prediction given an input.
 float *nn_predict(nn_t *nn, float *inputs)
 {
     // For both float and quantized models, we now ensure nn->neuron[] exists.
     // Layer 0's neuron pointer simply references the input array.
     nn->neuron[0] = inputs;
     forward_propagation(nn);
-    // Return the final (output) layer
+    // Return the output layer
     return nn->neuron[nn->depth - 1];
 }
 
-// Loads a neural‐net model from disk (first line = quantized‐flag).
-// If the first line is 0 → nn->quantized=false. If 1 → nn->quantized=true.
-nn_t *nn_load_model(char *path)
+// Loads a neural net model from a file.
+nn_t *nn_load_model_ascii(const char *path)
 {
     FILE *file = fopen(path, "r");
     if (!file) return NULL;
@@ -775,9 +774,147 @@ cleanup_quant_data:
     goto cleanup_quant_top;
 }
 
-// Saves a neural‐net model to disk. First line = quantized‐flag (0 or 1).  
-// Then: depth, each layer’s width/activation, then weights & biases as before.
-int nn_save_model(nn_t *nn, char *path)
+// Loads a neural-net model from a raw binary file.
+nn_t *nn_load_model_binary(const char *path)
+{
+    FILE *file = fopen(path, "rb");
+    if (!file) return NULL;
+
+    nn_t *nn = nn_init();
+    if (!nn) { fclose(file); return NULL; }
+
+    // 1) Quantized flag
+    uint8_t qflag;
+    if (fread(&qflag, sizeof(qflag), 1, file) != 1) goto error;
+    nn->quantized = (qflag != 0);
+
+    // 1a) Model version
+    if (fread(&nn->version_major, sizeof(nn->version_major), 1, file) != 1) goto error;
+    if (fread(&nn->version_minor, sizeof(nn->version_minor), 1, file) != 1) goto error;
+    if (fread(&nn->version_patch, sizeof(nn->version_patch), 1, file) != 1) goto error;
+    if (fread(&nn->version_build, sizeof(nn->version_build), 1, file) != 1) goto error;
+
+    // 2) Depth
+    uint32_t depth;
+    if (fread(&depth, sizeof(depth), 1, file) != 1) goto error;
+
+    // 3) Read each layer's width+activation and call nn_add_layer()
+    for (uint32_t i = 0; i < depth; i++) {
+        uint32_t w;
+        uint8_t a;
+        if (fread(&w, sizeof(w), 1, file) != 1) goto error;
+        if (fread(&a, sizeof(a), 1, file) != 1) goto error;
+        if (nn_add_layer(nn, (int)w, (int)a) != 0) goto cleanup;
+    }
+
+    // 4) Allocate neuron/loss/preact arrays
+    nn->neuron = realloc(nn->neuron, depth * sizeof(float *));
+    nn->loss   = realloc(nn->loss,   depth * sizeof(float *));
+    nn->preact = realloc(nn->preact, depth * sizeof(float *));
+    if (!nn->neuron || !nn->loss || !nn->preact) goto cleanup;
+    for (int L = 1; L < (int)depth; L++) {
+        nn->neuron[L] = malloc(nn->width[L] * sizeof(float));
+        nn->loss[L]   = malloc(nn->width[L] * sizeof(float));
+        nn->preact[L] = malloc(nn->width[L] * sizeof(float));
+        if (!nn->neuron[L] || !nn->loss[L] || !nn->preact[L]) goto cleanup;
+    }
+
+    // 5) Read weights & biases
+    if (!nn->quantized) {
+        // Float-mode: read dummy scales + real floats
+        for (int L = 1; L < (int)depth; L++) {
+            uint32_t curr = nn->width[L], prev = nn->width[L - 1];
+            float dummy;
+
+            // bias_scale placeholder
+            if (fread(&dummy, sizeof(dummy), 1, file) != 1) goto cleanup;
+
+            for (uint32_t i = 0; i < curr; i++) {
+                // weight_scale placeholder
+                if (fread(&dummy, sizeof(dummy), 1, file) != 1) goto cleanup;
+                // weights
+                if (fread(nn->weight[L][i], sizeof(float), prev, file) != prev) goto cleanup;
+                // bias
+                if (fread(&nn->bias[L][i], sizeof(float), 1, file) != 1) goto cleanup;
+            }
+        }
+    }
+    else {
+        // Quantized-mode: free float-side, allocate quantized arrays
+        for (int L = 1; L < (int)depth; L++) {
+            for (int i = 0; i < (int)nn->width[L]; i++) {
+                free(nn->weight[L][i]);
+                free(nn->weight_adj[L][i]);
+            }
+            free(nn->weight[L]);
+            free(nn->weight_adj[L]);
+            free(nn->bias[L]);
+        }
+        free(nn->weight);     nn->weight     = NULL;
+        free(nn->weight_adj); nn->weight_adj = NULL;
+        free(nn->bias);       nn->bias       = NULL;
+        free(nn->weight_scale); nn->weight_scale = NULL;
+        free(nn->bias_scale);   nn->bias_scale   = NULL;
+
+        // Top-level quant arrays
+        nn->weight_quantized = malloc(depth * sizeof(int8_t **));
+        nn->weight_scale     = malloc(depth * sizeof(float *));
+        nn->bias_quantized   = malloc(depth * sizeof(int8_t *));
+        nn->bias_scale       = malloc(depth * sizeof(float));
+        if (!nn->weight_quantized ||
+            !nn->weight_scale     ||
+            !nn->bias_quantized   ||
+            !nn->bias_scale) goto cleanup;
+
+        // Layer 0
+        nn->weight_quantized[0] = NULL;
+        nn->weight_scale    [0] = NULL;
+        nn->bias_quantized  [0] = NULL;
+        nn->bias_scale      [0] = 0.0f;
+
+        // Read per-layer quant data
+        for (int L = 1; L < (int)depth; L++) {
+            uint32_t curr = nn->width[L], prev = nn->width[L - 1];
+
+            // Allocate per-layer
+            nn->weight_quantized[L] = malloc(curr * sizeof(int8_t *));
+            nn->weight_scale    [L] = malloc(curr * sizeof(float));
+            nn->bias_quantized  [L] = malloc(curr * sizeof(int8_t));
+            if (!nn->weight_quantized[L] ||
+                !nn->weight_scale    [L] ||
+                !nn->bias_quantized  [L]) goto cleanup;
+
+            // Read each neuron's weight_scale and weights
+            for (uint32_t i = 0; i < curr; i++) {
+                if (fread(&nn->weight_scale[L][i], sizeof(float), 1, file) != 1) goto cleanup;
+                nn->weight_quantized[L][i] = malloc(prev * sizeof(int8_t));
+                if (!nn->weight_quantized[L][i]) goto cleanup;
+                if (fread(nn->weight_quantized[L][i], sizeof(int8_t), prev, file) != prev) goto cleanup;
+            }
+
+            // Read bias_scale[L]
+            if (fread(&nn->bias_scale[L], sizeof(float), 1, file) != 1) goto cleanup;
+            // Read quantized biases
+            if (fread(nn->bias_quantized[L], sizeof(int8_t), curr, file) != curr) goto cleanup;
+        }
+    }
+
+    fclose(file);
+    return nn;
+
+cleanup:
+    fclose(file);
+    nn_free(nn);
+    return NULL;
+
+error:
+    fclose(file);
+    nn_free(nn);
+    return NULL;
+}
+
+// Saves a neural net model to a file.
+int nn_save_model_ascii(nn_t *nn, const char *path)
 {
     FILE *file = fopen(path, "w");
     if (file == NULL)
@@ -822,6 +959,98 @@ int nn_save_model(nn_t *nn, char *path)
             for (int neuron = 0; neuron < curr_w; neuron++) {
                 fprintf(file, "%d\n", (int)nn->bias_quantized[layer][neuron]);
             }
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
+
+#include <stdio.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include "nn.h"
+
+// Exports a neural-net model as raw binary.
+int nn_save_model_binary(nn_t *nn, const char *path)
+{
+    FILE *file = fopen(path, "wb");
+    if (!file) return 1;
+
+    // 1) Quantized flag
+    uint8_t qflag = nn->quantized ? 1 : 0;
+    fwrite(&qflag,        sizeof(qflag),        1, file);
+
+    // 1a) Model version (major, minor, patch, build)
+    fwrite(&nn->version_major, sizeof(nn->version_major), 1, file);
+    fwrite(&nn->version_minor, sizeof(nn->version_minor), 1, file);
+    fwrite(&nn->version_patch, sizeof(nn->version_patch), 1, file);
+    fwrite(&nn->version_build, sizeof(nn->version_build), 1, file);
+
+    // 2) Depth
+    uint32_t depth = nn->depth;
+    fwrite(&depth, sizeof(depth), 1, file);
+
+    // 3) Width+activation per layer
+    for (uint32_t i = 0; i < depth; i++) {
+        uint32_t w = nn->width[i];
+        uint8_t  a = nn->activation[i];
+        fwrite(&w, sizeof(w), 1, file);
+        fwrite(&a, sizeof(a), 1, file);
+    }
+
+    // 4) Weights & biases
+    if (!nn->quantized) {
+        // Float-mode: placeholders for scales + actual floats
+        for (uint32_t L = 1; L < depth; L++) {
+            float bias_scale = 0.0f;
+            fwrite(&bias_scale, sizeof(bias_scale), 1, file);
+
+            uint32_t curr = nn->width[L], prev = nn->width[L-1];
+            for (uint32_t i = 0; i < curr; i++) {
+                float weight_scale = 0.0f;
+                fwrite(&weight_scale, sizeof(weight_scale), 1, file);
+
+                // weights
+                fwrite(nn->weight[L][i],
+                       sizeof(float),
+                       prev,
+                       file);
+
+                // bias
+                fwrite(&nn->bias[L][i],
+                       sizeof(float),
+                       1,
+                       file);
+            }
+        }
+    }
+    else {
+        // Quantized-mode: real scales + int8 quantized data
+        for (uint32_t L = 1; L < depth; L++) {
+            uint32_t curr = nn->width[L], prev = nn->width[L-1];
+
+            for (uint32_t i = 0; i < curr; i++) {
+                // per-neuron weight scale
+                fwrite(&nn->weight_scale[L][i],
+                       sizeof(float), 1, file);
+
+                // quantized weights
+                fwrite(nn->weight_quantized[L][i],
+                       sizeof(int8_t),
+                       prev,
+                       file);
+            }
+
+            // bias scale (one per layer)
+            fwrite(&nn->bias_scale[L],
+                   sizeof(float), 1, file);
+
+            // quantized biases
+            fwrite(nn->bias_quantized[L],
+                   sizeof(int8_t),
+                   curr,
+                   file);
         }
     }
 

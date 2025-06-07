@@ -5,7 +5,7 @@ STAMP       := .split.stamp
 
 .PHONY: all clean
 
-all:	train test predict quantize prune summary libnn.a libnn.so $(CSV_OUTPUTS)
+all:	export import train test predict quantize prune summary libnn.a libnn.so $(CSV_OUTPUTS)
 
 libnn.a: nn.o data_prep.o
 	$(RM) $@
@@ -21,6 +21,12 @@ data_prep.o: data_prep.c data_prep.h
 
 nn.o: nn.c nn.h
 	$(CC) $(CFLAGS) -c $<
+
+export: export.c libnn.a
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
+import: import.c libnn.a
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 train: train.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
@@ -51,4 +57,4 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o libnn.a libnn.so train test predict quantize prune summary model*.txt tags $(CSV_OUTPUTS)
+	$(RM) data_prep.o nn.o libnn.a libnn.so export import train test predict quantize prune summary model.* tags $(CSV_OUTPUTS)

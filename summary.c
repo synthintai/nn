@@ -30,8 +30,8 @@ int main(int argc, char *argv[])
         printf("  <model-file> : Path to a saved neural-net model (e.g., model.txt)\n");
         return 1;
     }
-    char *model_path = argv[1];
-    nn_t *network = nn_load_model(model_path);
+    const char *model_path = argv[1];
+    nn_t *network = nn_load_model_ascii(model_path);
     if (!network) {
         fprintf(stderr, "Failed to load model: %s\n", model_path);
         return 1;

@@ -22,7 +22,7 @@ int main(int argc, char *argv[])
     }
     // Load a previously saved model (specified by the user)
     const char *model_path = argv[1];
-    nn_t *model = nn_load_model((char *)model_path);
+    nn_t *model = nn_load_model_ascii((char *)model_path);
     if (model == NULL) {
         fprintf(stderr, "Error: Missing or invalid model file: %s\n", model_path);
         return 1;

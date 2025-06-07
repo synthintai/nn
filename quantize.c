@@ -8,8 +8,6 @@
  *   input_model:  Path to the floating‐point neural network model
  *   output_model: Path where to save the quantized model
  *
- * Note: In the new nn.h, nn_quantized_t no longer exists. Instead, we store
- *       quantized weights and biases directly inside an nn_t marked as `quantized = true`.
  */
 
 #include <stdio.h>
@@ -57,7 +55,7 @@ static int8_t quantize_value(float value, float scale, float zero_point)
 // Float‐based pointers (neuron, loss, preact, weight, weight_adj, bias)
 // are left NULL in the returned nn_t.
 //----------------------------------------------------------------
-static nn_t *nn_quantize(const nn_t *network)
+static nn_t *nn_quantize(nn_t *network)
 {
     if (network == NULL) {
         return NULL;
@@ -349,6 +347,10 @@ int main(int argc, char *argv[])
     }
 
     // 2) Quantize the network
+    if (network->quantized) {
+        fprintf(stderr, "Network has already been quantized\n");
+        return 1;
+    }
     nn_t *qnet = nn_quantize(network);
     if (!qnet) {
         fprintf(stderr, "Failed to quantize network\n");

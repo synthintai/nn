@@ -1385,3 +1385,103 @@ void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int strid
     }
 }
 
+// In-place quantization of nn_t
+int nn_quantize(nn_t *nn)
+{
+    if (!nn || nn->quantized) {
+        // nothing to do
+        return -1;
+    }
+
+    const int depth = (int)nn->depth;
+
+    // 1) Mark the network as quantized
+    nn->quantized = true;
+
+    // 2) Allocate quantization arrays in the union fields
+    nn->weight_quantized = malloc(depth * sizeof(int8_t **));
+    nn->weight_scale     = malloc(depth * sizeof(float   *));
+    nn->bias_quantized   = malloc(depth * sizeof(int8_t  *));
+    nn->bias_scale       = malloc(depth * sizeof(float));
+    if (!nn->weight_quantized || !nn->weight_scale ||
+        !nn->bias_quantized   || !nn->bias_scale) {
+        return -1;
+    }
+
+    // Initialize layer 0 entries
+    nn->weight_quantized[0] = NULL;
+    nn->weight_scale    [0] = NULL;
+    nn->bias_quantized  [0] = NULL;
+    nn->bias_scale      [0] = 0.0f;
+
+    // 3) Quantize each layer ≥1
+    for (int L = 1; L < depth; L++) {
+        int prev_w = nn->width[L - 1];
+        int curr_w = nn->width[L];
+
+        // a) Allocate per-layer arrays
+        nn->weight_quantized[L] = malloc(curr_w * sizeof(int8_t *));
+        nn->weight_scale    [L] = malloc(curr_w * sizeof(float));
+        nn->bias_quantized  [L] = malloc(curr_w * sizeof(int8_t));
+        if (!nn->weight_quantized[L] || !nn->weight_scale[L] || !nn->bias_quantized[L]) {
+            return -1;
+        }
+
+        // b) Compute one bias_scale for this layer
+        float min_b = nn->bias[L][0], max_b = min_b;
+        for (int i = 1; i < curr_w; i++) {
+            float v = nn->bias[L][i];
+            if (v < min_b) min_b = v;
+            if (v > max_b) max_b = v;
+        }
+        float layer_bias_scale = fmaxf(fabsf(min_b), fabsf(max_b)) / 127.0f;
+        if (layer_bias_scale == 0.0f) layer_bias_scale = 1e-8f;
+        nn->bias_scale[L] = layer_bias_scale;
+
+        // c) For each neuron in this layer:
+        for (int n = 0; n < curr_w; n++) {
+            // c1) Allocate the int8 weight-vector
+            nn->weight_quantized[L][n] = malloc(prev_w * sizeof(int8_t));
+            if (!nn->weight_quantized[L][n])
+                return -1;
+
+            // c2) Compute per-neuron weight scale
+            float min_w = nn->weight[L][n][0], max_w = min_w;
+            for (int k = 1; k < prev_w; k++) {
+                float w = nn->weight[L][n][k];
+                if (w < min_w) min_w = w;
+                if (w > max_w) max_w = w;
+            }
+            float neuron_scale = fmaxf(fabsf(min_w), fabsf(max_w)) / 127.0f;
+            if (neuron_scale == 0.0f) neuron_scale = 1e-8f;
+            nn->weight_scale[L][n] = neuron_scale;
+
+            // c3) Quantize each weight
+            for (int k = 0; k < prev_w; k++) {
+                float orig = nn->weight[L][n][k];
+                int8_t q = (int8_t)lroundf(orig / neuron_scale);
+                nn->weight_quantized[L][n][k] =
+                    (q > 127 ? 127 : (q < -128 ? -128 : q));
+            }
+
+            // c4) Quantize the bias
+            float borig = nn->bias[L][n];
+            int8_t bq = (int8_t)lroundf(borig / layer_bias_scale);
+            nn->bias_quantized[L][n] = (bq > 127 ? 127 : (bq < -128 ? -128 : bq));
+        }
+    }
+
+    // 4) Free all of the original float-side storage AFTER quantization
+    for (int L = 1; L < depth; L++) {
+        int wcount = (int)nn->width[L];
+        for (int n = 0; n < wcount; n++) {
+            free(nn->weight[L][n]);
+        }
+        free(nn->weight[L]);
+        free(nn->bias[L]);
+    }
+    free(nn->weight);
+    free(nn->bias);
+
+    return 0;
+}

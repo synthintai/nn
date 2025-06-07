@@ -120,11 +120,7 @@ Licensed under the [Apache License 2.0](./LICENSE).
 ## TODO
 
 * Run cppcheck and fix all errors and warnings from static analysis
-* Add ability to import/export model as a c header file (write import/export utility?)
-* Change nn_load to nn_load_model_file
-* Change nn_save to nn_save_model_file
-* Add nn_load_model_memory
-* Add nn_save_model_memory
+* Add nn_load_model_memory for embedded use
 * Change pooling action to layer type that can be added to the model
 * Change conv2d action to layer type that can be added to the model
 * Add stride and padding parms to conv2d

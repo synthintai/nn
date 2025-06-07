@@ -16,17 +16,19 @@ The code is divided into the following sections:
 
 2. `data_prep.[ch]` - Data processing functions, used to read, parse, and shuffle training data.
 
-3. `train.c` - An example of how to construct, train, and save a neural network model.
+3. `dequantize.c` - Converts an 8-bit integer model into a floating point model.
 
-4. `test.c` - Evaluates model performance, comparing predictions to ground truth of seen vs. unseen data.
+4. `train.c` - An example of how to construct, train, and save a neural network model.
 
-5. `predict.c` - Demonstrates how to use a trained neural network model in a target application to make predictions on new data.
+5. `test.c` - Evaluates model performance, comparing predictions to ground truth of seen vs. unseen data.
 
-6. `prune.c` - Removes least contributing neuron from a network to reduce model size and improve performance.
+6. `predict.c` - Demonstrates how to use a trained neural network model in a target application to make predictions on new data.
 
-7. `quantize.c` - Converts a floating-point model to a 8-bit integer model. This reduces model size by about 66%.
+7. `prune.c` - Removes least contributing neuron from a network to reduce model size and improve performance.
 
-8. `summary.c` - Describes a model.
+8. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
+
+9. `summary.c` - Describes a model file.
 
 ## Features
 

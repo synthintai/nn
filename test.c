@@ -13,51 +13,40 @@
 #include "nn.h"
 #include "data_prep.h"
 
-int main(void)
+int main(int argc, char *argv[])
 {
-    nn_t    *model;
-    data_t  *data;
-    float   *prediction;
-    int      num_samples;
-    int      correct;
-    int      true_positive;
-    int      false_positive;
-
-    //----------------------------------------------------------------
-    // 1) Load a previously saved model.  The model.txt file could
-    //    represent either a floating‐point model or a quantized model.
-    //----------------------------------------------------------------
-    model = nn_load_model("model.txt");
-    if (model == NULL) {
-        printf("Error: Missing or invalid model file.\n");
+    if (argc != 2) {
+        printf("Usage: %s <model-file>\n", argv[0]);
+        printf("  <model-file> : Path to a saved neural-net model (e.g., model.txt)\n");
         return 1;
     }
-
-    //----------------------------------------------------------------
-    // 2) Load training data into memory
-    //----------------------------------------------------------------
-    data = data_load("train.csv",
-                     model->width[0],                  // input dimension
-                     model->width[model->depth - 1]);  // output dimension
+    // Load a previously saved model (specified by the user)
+    const char *model_path = argv[1];
+    nn_t *model = nn_load_model((char *)model_path);
+    if (model == NULL) {
+        fprintf(stderr, "Error: Missing or invalid model file: %s\n", model_path);
+        return 1;
+    }
+    // Load training data into memory
+    data_t *data = data_load(
+        "train.csv",
+        model->width[0],                 // input dimension
+        model->width[model->depth - 1]   // output dimension
+    );
     if (data == NULL) {
-        printf("Error: Could not load training data.\n");
+        printf("Error: Could not load training data (train.csv).\n");
         nn_free(model);
         return 1;
     }
-
-    //----------------------------------------------------------------
-    // 3) Evaluate accuracy on the training set
-    //----------------------------------------------------------------
-    num_samples = 0;
-    correct     = 0;
+    // Evaluate accuracy on the training set
+    int num_samples = 0;
+    int correct     = 0;
     for (int i = 0; i < data->num_rows; i++) {
         num_samples++;
+        float *prediction = nn_predict(model, data->input[i]);
 
-        // Call nn_predict() unconditionally, regardless of quantized or not.
-        prediction = nn_predict(model, data->input[i]);
-
-        true_positive  = 0;
-        false_positive = 0;
+        int true_positive  = 0;
+        int false_positive = 0;
 
         // Binary decision: target >= 0.5 → positive class, else negative
         for (int j = 0; j < model->width[model->depth - 1]; j++) {
@@ -71,48 +60,36 @@ int main(void)
                 }
             }
         }
-
-        // We consider the sample correct if exactly one output neuron
-        // is “on” for a true‐positive case and none for false‐positive.
+        // A sample is correct if exactly one output neuron is “on” for a true-positive
+        // and none for false-positive
         if ((true_positive == 1) && (false_positive == 0)) {
             correct++;
         }
-
-        // Note: nn_predict returns either:
-        //   - a pointer into model->neuron[...] for floating‐point models, or
-        //   - a newly allocated float array for quantized models
-        // In either case, we do NOT free() here.  The caller of nn_predict
-        // must manage any internal or allocated buffers.  (Per the updated API,
-        // nn_predict should handle memory lifetime itself.)
+        // Note: nn_predict manages its own buffers. Do NOT free(prediction) here.
     }
 
     printf("Train: %d/%d = %2.2f%%\n",
            correct, num_samples,
            (correct * 100.0f) / (float)num_samples);
-
     data_free(data);
-
-    //----------------------------------------------------------------
-    // 4) Load unseen (test) data and evaluate
-    //----------------------------------------------------------------
-    data = data_load("test.csv",
-                     model->width[0],
-                     model->width[model->depth - 1]);
+    // Load unseen (test) data and evaluate
+    data = data_load(
+        "test.csv",
+        model->width[0],                  // input dimension
+        model->width[model->depth - 1]    // output dimension
+    );
     if (data == NULL) {
-        printf("Error: Could not load test data.\n");
+        printf("Error: Could not load test data (test.csv).\n");
         nn_free(model);
         return 1;
     }
-
     num_samples = 0;
-    correct     = 0;
+    correct = 0;
     for (int i = 0; i < data->num_rows; i++) {
         num_samples++;
-
-        prediction = nn_predict(model, data->input[i]);
-
-        true_positive  = 0;
-        false_positive = 0;
+        float *prediction = nn_predict(model, data->input[i]);
+        int true_positive  = 0;
+        int false_positive = 0;
         for (int j = 0; j < model->width[model->depth - 1]; j++) {
             if (data->target[i][j] >= 0.5f) {
                 if (prediction[j] >= 0.5f) {
@@ -127,19 +104,13 @@ int main(void)
         if ((true_positive == 1) && (false_positive == 0)) {
             correct++;
         }
-
-        // Again, do not free prediction here; nn_predict manages its own buffers.
+        // Again, do not free(prediction); nn_predict manages its own buffers.
     }
-
     printf("Test : %d/%d = %2.2f%%\n",
            correct, num_samples,
            (correct * 100.0f) / (float)num_samples);
-
     data_free(data);
-
-    //----------------------------------------------------------------
-    // 5) Clean up
-    //----------------------------------------------------------------
     nn_free(model);
     return 0;
 }
+

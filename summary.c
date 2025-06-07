@@ -26,7 +26,8 @@ static const char *activation_names[] = {
 int main(int argc, char *argv[])
 {
     if (argc != 2) {
-        printf("Usage: summary <model>\n");
+        printf("Usage: %s <model-file>\n", argv[0]);
+        printf("  <model-file> : Path to a saved neural-net model (e.g., model.txt)\n");
         return 1;
     }
     char *model_path = argv[1];

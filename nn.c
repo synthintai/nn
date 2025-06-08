@@ -1205,8 +1205,8 @@ void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int strid
           break;
         }
         if (z == 3) {
-          // Alpha channel → max
-          *(dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = 255;
+          // Alpha channel set to max
+          *(dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = -1;
         } else {
           *(dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = (char)kernel_value;
         }

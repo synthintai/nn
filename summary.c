@@ -15,7 +15,7 @@ static const char *activation_names[] = {
     "THRESHOLD", "SIGMOID", "SIGMOID_FAST", "TANH",       "TANH_FAST"};
 
 static const char *layer_types[] = {
-    "NONE",        "FCN",        "CNN",        "POOL",       "LSTM",
+    "NONE",        "FC",         "CNN",        "POOL",       "LSTM",
     "GRU",         "RNN",        "ATTENTION",  "TRANSFORMER", "INPUT",
     "OUTPUT"};
 

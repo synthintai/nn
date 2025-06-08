@@ -29,7 +29,7 @@ typedef enum {
 
 typedef enum {
   LAYER_TYPE_NONE = 0,
-  LAYER_TYPE_FCN,        // Fully Connected Network Layer
+  LAYER_TYPE_FC,         // Fully Connected Network Layer
   LAYER_TYPE_CNN,        // Convolutional Neural Network Layer - Not yet implemented
   LAYER_TYPE_POOL,       // Pooling Layer - Not yet implemented
   LAYER_TYPE_LSTM,       // Long Short-Term Memory Layer - Not yet implemented

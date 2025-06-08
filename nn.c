@@ -205,6 +205,7 @@ nn_t *nn_init(void)
   nn->version_patch = NN_VERSION_PATCH;
   nn->version_build = NN_VERSION_BUILD;
   nn->depth = 0;
+  nn->layer_type = NULL;
   nn->width = NULL;
   nn->activation = NULL;
   // Floats‐only pointers are NULL initially
@@ -254,8 +255,9 @@ void nn_free(nn_t *nn)
     free(nn->neuron);
     free(nn->loss);
     free(nn->preact);
-    free(nn->activation);
+    free(nn->layer_type);
     free(nn->width);
+    free(nn->activation);
   }
   // Free quantized side arrays if allocated
   if (nn->quantized) {
@@ -281,16 +283,22 @@ void nn_free(nn_t *nn)
     free(nn->neuron);
     free(nn->loss);
     free(nn->preact);
-    free(nn->activation);
+    free(nn->layer_type);
     free(nn->width);
+    free(nn->activation);
   }
   free(nn);
 }
 
-int nn_add_layer(nn_t *nn, int width, int activation)
+int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation)
 {
   // Increase depth by one
   nn->depth++;
+  // Reallocate the layer_type array
+  nn->layer_type = (uint8_t *)realloc(nn->layer_type, nn->depth * sizeof(*nn->layer_type));
+  if (nn->layer_type == NULL)
+    return 1;
+  nn->layer_type[nn->depth - 1] = (uint8_t)layer_type;
   // Reallocate the width array
   nn->width = (uint32_t *)realloc(nn->width, nn->depth * sizeof(*nn->width));
   if (nn->width == NULL)
@@ -505,15 +513,15 @@ nn_t *nn_load_model_ascii(const char *path)
     nn_free(nn);
     return NULL;
   }
-  // Call nn_add_layer for each (width, activation)
+  // Call nn_add_layer for each (layer_type, width, activation)
   for (int i = 0; i < depth; i++) {
-    int w, act;
-    if (fscanf(file, "%d %d\n", &w, &act) != 2) {
+    int layer_type, w, act;
+    if (fscanf(file, "%d %d %d\n", &layer_type, &w, &act) != 3) {
       fclose(file);
       nn_free(nn);
       return NULL;
     }
-    if (nn_add_layer(nn, w, act) != 0) {
+    if (nn_add_layer(nn, layer_type, w, act) != 0) {
       fclose(file);
       nn_free(nn);
       return NULL;
@@ -739,15 +747,18 @@ nn_t *nn_load_model_binary(const char *path)
   uint32_t depth;
   if (fread(&depth, sizeof(depth), 1, file) != 1)
     goto error;
-  // Read each layer's width+activation and call nn_add_layer()
+  // Read each layer's width, layer type, and activation and call nn_add_layer()
   for (uint32_t i = 0; i < depth; i++) {
+    layer_type_t layer_type;
     uint32_t w;
     uint8_t a;
+    if (fread(&layer_type, sizeof(layer_type), 1, file) != 1)
+      goto error;
     if (fread(&w, sizeof(w), 1, file) != 1)
       goto error;
     if (fread(&a, sizeof(a), 1, file) != 1)
       goto error;
-    if (nn_add_layer(nn, (int)w, (int)a) != 0)
+    if (nn_add_layer(nn, layer_type, (int)w, (int)a) != 0)
       goto cleanup;
   }
   // Allocate neuron/loss/preact arrays
@@ -871,9 +882,9 @@ int nn_save_model_ascii(nn_t *nn, const char *path)
   fprintf(file, "%hhu %hhu %hhu %hhu\n", nn->version_major, nn->version_minor, nn->version_patch, nn->version_build);
   // Write depth
   fprintf(file, "%" PRId32 "\n", nn->depth);
-  // Write each layer's width and activation
+  // Write each layer's width, layer type, and activation
   for (int i = 0; i < (int)nn->depth; i++) {
-    fprintf(file, "%" PRId32 " %d\n", nn->width[i], nn->activation[i]);
+    fprintf(file, "%" PRId32 " %d %d\n", nn->layer_type[i], nn->width[i], nn->activation[i]);
   }
   // Write weights & biases
   if (!nn->quantized) {
@@ -928,10 +939,12 @@ int nn_save_model_binary(nn_t *nn, const char *path)
   // Depth
   uint32_t depth = nn->depth;
   fwrite(&depth, sizeof(depth), 1, file);
-  // Width and activation per layer
+  // layer_type, width, and activation per layer
   for (uint32_t i = 0; i < depth; i++) {
+    uint8_t layer_type = nn->layer_type[i];
     uint32_t w = nn->width[i];
     uint8_t a = nn->activation[i];
+    fwrite(&layer_type, sizeof(layer_type), 1, file);
     fwrite(&w, sizeof(w), 1, file);
     fwrite(&a, sizeof(a), 1, file);
   }

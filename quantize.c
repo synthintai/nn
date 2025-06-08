@@ -18,18 +18,15 @@ int main(int argc, char *argv[]) {
     printf("  output_model: path where to save the quantized model\n");
     return 1;
   }
-
   const char *input_model = argv[1];
   const char *output_model = argv[2];
-
-  // 1) Load the original floating-point network
+  // Load the original floating-point network
   nn_t *network = nn_load_model_ascii((char *)input_model);
   if (!network) {
     fprintf(stderr, "Failed to load input model: %s\n", input_model);
     return 1;
   }
-
-  // 2) Quantize the network
+  // Quantize the network
   if (network->quantized) {
     fprintf(stderr, "Network has already been quantized\n");
     nn_free(network);
@@ -40,19 +37,15 @@ int main(int argc, char *argv[]) {
     nn_free(network);
     return 1;
   }
-
-  // 3) Save the quantized network (with leading "1\n" flag)
+  // Save the quantized network (with leading "1\n" flag)
   if (nn_save_model_ascii(network, output_model) != 0) {
     fprintf(stderr, "Failed to save quantized model: %s\n", output_model);
     nn_free(network);
     return 1;
   }
-
   printf("Successfully quantized model\n");
   printf("  Input:  %s\n", input_model);
   printf("  Output: %s\n", output_model);
-
-  // 4) Clean up
   nn_free(network);
   return 0;
 }

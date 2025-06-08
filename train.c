@@ -18,8 +18,7 @@
 int main(int argc, char *argv[]) {
   if (argc != 2) {
     printf("Usage: %s <model-file>\n", argv[0]);
-    printf("  <model-file> : Path to the neural-net model to load or create "
-           "(e.g., model.txt)\n");
+    printf("  <model-file> : Path to the neural net model to load or create (e.g., model.txt)\n");
     return 1;
   }
   const char *model_path = argv[1];
@@ -65,17 +64,16 @@ int main(int argc, char *argv[]) {
       return 1;
     }
     // Construct the neural network, layer by layer
-    nn_add_layer(nn, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE);
-    nn_add_layer(nn, 100, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU);
-    nn_add_layer(nn, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU);
-    nn_add_layer(nn, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID);
+    nn_add_layer(nn, LAYER_TYPE_INPUT, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE);
+    nn_add_layer(nn, LAYER_TYPE_FCN, 100, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU);
+    nn_add_layer(nn, LAYER_TYPE_FCN, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU);
+    nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID);
   } else {
     printf("Using existing model file: %s\n", model_path);
     // Verify that model dimensions match expected inputs/outputs
     if ((nn->width[0] != (uint32_t)num_inputs) ||
         (nn->width[nn->depth - 1] != (uint32_t)num_outputs)) {
-      printf("Error: Loaded model dimensions do not match expected %d→%d.\n",
-             num_inputs, num_outputs);
+      printf("Error: Loaded model dimensions do not match expected %d→%d.\n", num_inputs, num_outputs);
       nn_free(nn);
       data_free(train_data);
       data_free(validation_data);
@@ -105,7 +103,6 @@ int main(int argc, char *argv[]) {
     epochs++;
     printf("%.5f, %.5f, %.5f\n", train_error, validation_error, learning_rate);
     learning_rate *= annealing;
-
     // Save the neural network architecture and weights to the specified file
     nn_save_model_ascii(nn, (char *)model_path);
   }

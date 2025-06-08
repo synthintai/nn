@@ -14,8 +14,7 @@
 int main(int argc, char *argv[]) {
   if (argc != 2) {
     printf("Usage: %s <model-file>\n", argv[0]);
-    printf("  <model-file> : Path to a saved neural-net model (e.g., "
-           "model.txt)\n");
+    printf("  <model-file> : Path to a saved neural-net model (e.g., model.txt)\n");
     return 1;
   }
   // Load a previously saved model (specified by the user)
@@ -26,10 +25,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   // Load training data into memory
-  data_t *data = data_load("train.csv",
-                           model->width[0],               // input dimension
-                           model->width[model->depth - 1] // output dimension
-  );
+  data_t *data = data_load("train.csv", model->width[0], model->width[model->depth - 1]);
   if (data == NULL) {
     printf("Error: Could not load training data (train.csv).\n");
     nn_free(model);
@@ -65,10 +61,7 @@ int main(int argc, char *argv[]) {
   printf("Train: %d/%d = %2.2f%%\n", correct, num_samples, (correct * 100.0f) / (float)num_samples);
   data_free(data);
   // Load unseen (test) data and evaluate
-  data = data_load("test.csv",
-                   model->width[0],               // input dimension
-                   model->width[model->depth - 1] // output dimension
-  );
+  data = data_load("test.csv", model->width[0], model->width[model->depth - 1]);
   if (data == NULL) {
     printf("Error: Could not load test data (test.csv).\n");
     nn_free(model);
@@ -97,8 +90,7 @@ int main(int argc, char *argv[]) {
     }
     // Again, do not free(prediction); nn_predict manages its own buffers.
   }
-  printf("Test : %d/%d = %2.2f%%\n", correct, num_samples,
-         (correct * 100.0f) / (float)num_samples);
+  printf("Test : %d/%d = %2.2f%%\n", correct, num_samples, (correct * 100.0f) / (float)num_samples);
   data_free(data);
   nn_free(model);
   return 0;

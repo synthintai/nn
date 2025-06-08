@@ -11,7 +11,7 @@
 // NN API Version
 #define NN_VERSION_MAJOR 0
 #define NN_VERSION_MINOR 1
-#define NN_VERSION_PATCH 4
+#define NN_VERSION_PATCH 5
 #define NN_VERSION_BUILD 0
 
 typedef enum {
@@ -28,6 +28,20 @@ typedef enum {
 } activation_function_type_t;
 
 typedef enum {
+  LAYER_TYPE_NONE = 0,
+  LAYER_TYPE_FCN,        // Fully Connected Network Layer
+  LAYER_TYPE_CNN,        // Convolutional Neural Network Layer - Not yet implemented
+  LAYER_TYPE_POOL,       // Pooling Layer - Not yet implemented
+  LAYER_TYPE_LSTM,       // Long Short-Term Memory Layer - Not yet implemented
+  LAYER_TYPE_GRU,        // Gated Recurrent Unit Layer - Not yet implemented
+  LAYER_TYPE_RNN,        // Recurrent Neural Network Layer - Not yet implemented
+  LAYER_TYPE_ATTENTION,  // Attention Layer - Not yet implemented
+  LAYER_TYPE_TRANSFORMER,// Transformer Layer - Not yet implemented
+  LAYER_TYPE_INPUT,      // Input Layer
+  LAYER_TYPE_OUTPUT      // Output Layer
+} layer_type_t;
+
+typedef enum {
   POOLING_TYPE_NONE = 0,
   POOLING_TYPE_MIN,
   POOLING_TYPE_MAX,
@@ -42,15 +56,16 @@ typedef struct {
   uint8_t version_build;  // Build number of the network model
   uint32_t depth;         // Number of layers, including the input and the output layers
   uint32_t *width;        // Number of neurons in each layer (can vary from layer to layer)
+  uint8_t *layer_type;    // Type of each layer
   uint8_t *activation;    // Activation function used for each layer
   float **neuron;         // Output value for each neuron in each layer
   float **loss;           // Error derivative for each neuron in each layer
   float **preact;         // Neuron values before activation function is applied for each neuron in each layer
-  float **weight_scale;
+  float **weight_scale;   // Scale for each weight in each layer
   float ***weight;        // Weight for each neuron in each layer
   int8_t ***weight_quantized; // Quantized weight for each neuron in each layer
   float ***weight_adj;    // Adjustment of each weight for each neuron in each layer
-  float *bias_scale;
+  float *bias_scale;      // Scale for each bias in each layer
   float **bias;           // Bias for each neuron
   int8_t **bias_quantized;// Quantized bias for each neuron
 } nn_t;
@@ -58,7 +73,7 @@ typedef struct {
 uint32_t nn_version(void);
 nn_t *nn_init(void);
 void nn_free(nn_t *nn);
-int nn_add_layer(nn_t *nn, int width, int activation);
+int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation);
 int nn_save_model_ascii(nn_t *nn, const char *path);
 int nn_save_model_binary(nn_t *nn, const char *path);
 nn_t *nn_load_model_ascii(const char *path);

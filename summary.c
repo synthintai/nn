@@ -9,16 +9,20 @@
 #include <stdio.h>
 #include "nn.h"
 
-// Activation‐function names must exactly match the enum in nn.h
+// Activation function names must exactly match the enum in nn.h
 static const char *activation_names[] = {
     "NONE",      "LINEAR",  "RELU",         "LEAKY_RELU", "ELU",
     "THRESHOLD", "SIGMOID", "SIGMOID_FAST", "TANH",       "TANH_FAST"};
 
+static const char *layer_types[] = {
+    "NONE",        "FCN",        "CNN",        "POOL",       "LSTM",
+    "GRU",         "RNN",        "ATTENTION",  "TRANSFORMER", "INPUT",
+    "OUTPUT"};
+
 int main(int argc, char *argv[]) {
   if (argc != 2) {
     printf("Usage: %s <model-file>\n", argv[0]);
-    printf("  <model-file> : Path to a saved neural-net model (e.g., "
-           "model.txt)\n");
+    printf("  <model-file> : Path to a saved neural-net model (e.g., model.txt)\n");
     return 1;
   }
   const char *model_path = argv[1];
@@ -35,8 +39,7 @@ int main(int argc, char *argv[]) {
   unsigned lib_minor = (lib_ver >> 16) & 0xFF;
   unsigned lib_patch = (lib_ver >> 8) & 0xFF;
   unsigned lib_build = lib_ver & 0xFF;
-  printf("NN Lib Version:\t%u.%u.%u.%u\n", lib_major, lib_minor, lib_patch,
-         lib_build);
+  printf("NN Lib Version:\t%u.%u.%u.%u\n", lib_major, lib_minor, lib_patch, lib_build);
   if (network->quantized) {
     printf("Model Type:\tQuantized (fixed-point int8)\n");
   } else {
@@ -49,7 +52,7 @@ int main(int argc, char *argv[]) {
     if (act_code < (sizeof(activation_names) / sizeof(activation_names[0]))) {
       act_name = activation_names[act_code];
     }
-    printf("%d\t%s\t%u\t%s\n", i, "dense", network->width[i], act_name);
+    printf("%d\t%s\t%u\t%s\n", i, layer_types[network->layer_type[i]], network->width[i], act_name);
   }
   nn_free(network);
   return 0;

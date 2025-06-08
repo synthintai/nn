@@ -884,7 +884,7 @@ int nn_save_model_ascii(nn_t *nn, const char *path)
   fprintf(file, "%" PRId32 "\n", nn->depth);
   // Write each layer's width, layer type, and activation
   for (int i = 0; i < (int)nn->depth; i++) {
-    fprintf(file, "%" PRId32 " %d %d\n", nn->layer_type[i], nn->width[i], nn->activation[i]);
+    fprintf(file, "%d %" PRId32 " %d\n", nn->layer_type[i], nn->width[i], nn->activation[i]);
   }
   // Write weights & biases
   if (!nn->quantized) {

@@ -160,24 +160,59 @@ static void forward_propagation(nn_t *nn)
 
   // Calculate neuron values in each layer
   for (i = 1; i < (int)nn->depth; i++) {
-    for (j = 0; j < (int)nn->width[i]; j++) {
-      sum = 0.0f;
-      // Dot‐product: previous layer output * weight
-      for (k = 0; k < (int)nn->width[i - 1]; k++) {
-        if (nn->quantized)
-          sum += nn->neuron[i - 1][k] * nn->weight_quantized[i][j][k] * nn->weight_scale[i][j];
-        else
-          sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
-      }
-      // Add bias
-      if (nn->quantized)
-        sum += nn->bias_quantized[i][j] * nn->bias_scale[i];
-      else
-        sum += nn->bias[i][j];
-      // Apply activation
-      nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
-      // Cache pre‐activation for backprop
-      nn->preact[i][j] = sum;
+    switch(nn->layer_type[i]) {
+      case LAYER_TYPE_FC:
+      case LAYER_TYPE_OUTPUT:
+        // Fully Connected Layer
+        for (j = 0; j < (int)nn->width[i]; j++) {
+          sum = 0.0f;
+          // Dot product: previous layer output * weight
+          for (k = 0; k < (int)nn->width[i - 1]; k++) {
+            if (nn->quantized)
+              sum += nn->neuron[i - 1][k] * nn->weight_quantized[i][j][k] * nn->weight_scale[i][j];
+            else
+              sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
+          }
+          // Add bias
+          if (nn->quantized)
+            sum += nn->bias_quantized[i][j] * nn->bias_scale[i];
+          else
+            sum += nn->bias[i][j];
+          // Apply activation
+          nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
+          // Cache pre-activation for backprop
+          nn->preact[i][j] = sum;
+        }
+        break;
+      case LAYER_TYPE_CNN:
+        // Convolutional Neural Network Layer
+        int xo, yo;
+        // TODO: Fill in kernel_size and stride
+        nn_conv2d(nn, i, 3, 1, 16, 16, &xo, &yo);
+        break;
+      case LAYER_TYPE_POOL:
+        // Pooling Layer
+        break;
+      case LAYER_TYPE_LSTM:
+        // Long Short-Term Memory Layer
+        break;
+      case LAYER_TYPE_GRU:
+        // Gated Recurrent Unit Layer
+        break;
+      case LAYER_TYPE_RNN:
+        // Recurrent Neural Network Layer
+        break;
+      case LAYER_TYPE_ATTENTION:
+        // Attention Layer
+        break;
+      case LAYER_TYPE_TRANSFORMER:
+        // Transformer Layer
+        break;
+      case LAYER_TYPE_INPUT:
+      case LAYER_TYPE_NONE:
+      default:
+        // No operation for this layer
+        break;
     }
   }
 }
@@ -197,7 +232,7 @@ nn_t *nn_init(void)
   nn_t *nn = (nn_t *)malloc(sizeof(nn_t));
   if (nn == NULL)
     return NULL;
-  // Mark as non‐quantized by default
+  // Mark as non-quantized by default
   nn->quantized = false;
   // Populate version from macros
   nn->version_major = NN_VERSION_MAJOR;
@@ -208,14 +243,14 @@ nn_t *nn_init(void)
   nn->layer_type = NULL;
   nn->width = NULL;
   nn->activation = NULL;
-  // Floats‐only pointers are NULL initially
+  // Floats-only pointers are NULL initially
   nn->neuron = NULL;
   nn->loss = NULL;
   nn->preact = NULL;
   nn->weight = NULL;
   nn->weight_adj = NULL;
   nn->bias = NULL;
-  // Quantization‐related pointers start NULL
+  // Quantization-related pointers start NULL
   nn->weight_quantized = NULL;
   nn->weight_scale = NULL;
   nn->bias_quantized = NULL;
@@ -468,7 +503,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       }
     }
   }
-  // Return the post‐update error
+  // Return the post-update error
   return nn_error(nn, inputs, targets);
 }
 
@@ -580,7 +615,7 @@ nn_t *nn_load_model_ascii(const char *path)
     return NULL;
   }
   // Otherwise: quantized == true
-  // Free all float‐side allocations made by nn_add_layer (weight, weight_adj, bias)
+  // Free all float-side allocations made by nn_add_layer (weight, weight_adj, bias)
   for (int layer = 1; layer < nn->depth; layer++) {
     // Free per-neuron weight and weight_adj
     for (int i = 0; i < (int)nn->width[layer]; i++) {
@@ -876,7 +911,7 @@ int nn_save_model_ascii(nn_t *nn, const char *path)
   FILE *file = fopen(path, "w");
   if (file == NULL)
     return 1;
-  // Write quantized flag: 0 = floating, 1 = fixed‐point
+  // Write quantized flag: 0 = floating, 1 = fixed point
   fprintf(file, "%d\n", nn->quantized ? 1 : 0);
   // Write model version (major, minor, patch, build)
   fprintf(file, "%hhu %hhu %hhu %hhu\n", nn->version_major, nn->version_minor, nn->version_patch, nn->version_build);
@@ -992,7 +1027,7 @@ int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   memmove(&nn->neuron[layer][neuron_index], &nn->neuron[layer][neuron_index + 1], sizeof(float) * (old_width - neuron_index - 1));
   memmove(&nn->preact[layer][neuron_index], &nn->preact[layer][neuron_index + 1], sizeof(float) * (old_width - neuron_index - 1));
   memmove(&nn->loss[layer][neuron_index], &nn->loss[layer][neuron_index + 1], sizeof(float) * (old_width - neuron_index - 1));
-  // Free exactly one removed‐neuron row (weights and weight_adj)
+  // Free exactly one removed neuron row (weights and weight_adj)
   if (nn->quantized) {
     // Free the int8_t row of input weights for this neuron
     free(nn->weight_quantized[layer][neuron_index]);
@@ -1006,10 +1041,10 @@ int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   if (nn->quantized) {
     // Shift pointer array for weight_quantized[layer]
     memmove(&nn->weight_quantized[layer][neuron_index], &nn->weight_quantized[layer][neuron_index + 1], sizeof(int8_t *) * (old_width - neuron_index - 1));
-    // Shift the single‐byte biases in bias_quantized[layer]
+    // Shift the single byte biases in bias_quantized[layer]
     memmove(&nn->bias_quantized[layer][neuron_index], &nn->bias_quantized[layer][neuron_index + 1], sizeof(int8_t) * (old_width - neuron_index - 1));
     // Leave bias_scale[layer] alone (it’s a single float per layer).
-    // The float‐side arrays (weight[layer], weight_adj[layer], bias[layer]) are NULL here, so we must NOT touch them in quantized mode.
+    // The float side arrays (weight[layer], weight_adj[layer], bias[layer]) are NULL here, so we must NOT touch them in quantized mode.
   } else {
     // Shift float pointers for weight[layer] and weight_adj[layer]
     memmove(&nn->weight[layer][neuron_index], &nn->weight[layer][neuron_index + 1], sizeof(float *) * (old_width - neuron_index - 1));
@@ -1019,9 +1054,9 @@ int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   }
   // Realloc every array in this layer:
   if (nn->quantized) {
-    // Shrink weight_quantized[layer] (pointer‐to‐pointer)
+    // Shrink weight_quantized[layer] (pointer-to-pointer)
     nn->weight_quantized[layer] = (int8_t **)realloc(nn->weight_quantized[layer], sizeof(int8_t *) * (old_width - 1));
-    // Shrink the 1‐D bias array bias_quantized[layer]:
+    // Shrink the 1-D bias array bias_quantized[layer]:
     nn->bias_quantized[layer] = (int8_t *)realloc(nn->bias_quantized[layer], sizeof(int8_t) * (old_width - 1));
     // bias_scale[layer] remains a single float, so no realloc.
   } else {
@@ -1177,6 +1212,7 @@ void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_
   }
 }
 
+/*
 void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int stride, activation_function_type_t activation_function_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
 {
   uint32_t kernel_value;
@@ -1210,6 +1246,61 @@ void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int strid
         } else {
           *(dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = (char)kernel_value;
         }
+      }
+    }
+  }
+}
+*/
+
+// 2D convolution on layer “layer” of nn.
+// Reads input feature maps from nn->neuron[layer-1],
+// Uses weights nn->weight[layer][k] and biases nn->bias[layer][k],
+// Writes output feature maps & preacts into nn->neuron[layer] / nn->preact[layer],
+// Applies the layer’s own activation nn->activation[layer].
+// Kernel_size and stride are as usual;
+// x_in_size, y_in_size are the spatial dims of the input maps;
+// x_out_size, y_out_size are written out.
+void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
+{
+  const int out_kernels  = nn->width[layer];
+  const int in_features  = nn->width[layer - 1];
+  const int filter_area  = kernel_size * kernel_size;
+
+  // Compute output dimensions
+  *x_out_size = ((x_in_size - kernel_size) / stride) + 1;
+  *y_out_size = ((y_in_size - kernel_size) / stride) + 1;
+  // Pick up our activation
+  activation_function_t af = activation_function[nn->activation[layer]];
+  // For each output channel (i.e. each “neuron” in this conv layer)
+  for (int k = 0; k < out_kernels; k++) {
+    float  b    = nn->bias[layer][k];
+    // length == in_features * filter_area
+    float *kern = nn->weight[layer][k];
+    // Pointers into the flat neuron & preact arrays
+    float *out_neurons = nn->neuron[layer] + k * (*x_out_size) * (*y_out_size);
+    float *out_preact  = nn->preact[layer] + k * (*x_out_size) * (*y_out_size);
+    // Slide the filter window over y_out, x_out
+    for (int y = 0; y < *y_out_size; y++) {
+      for (int x = 0; x < *x_out_size; x++) {
+        float sum = 0.0f;
+        // Sum over each input feature map
+        for (int f = 0; f < in_features; f++) {
+          // Pointer to start of this feature’s own map
+          float *in_map = nn->neuron[layer - 1] + f * x_in_size * y_in_size;
+          // Convolve that entire patch:
+          int idx = 0;
+          for (int ry = 0; ry < kernel_size; ry++) {
+            for (int rx = 0; rx < kernel_size; rx++, idx++) {
+              int px = x * stride + rx;
+              int py = y * stride + ry;
+              sum += in_map[py * x_in_size + px] * kern[f * filter_area + idx];
+            }
+          }
+        }
+        // Add bias, store preact, apply activation
+        sum += b;
+        *out_preact++ = sum;
+        *out_neurons++ = af(sum, false);
       }
     }
   }

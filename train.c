@@ -65,6 +65,7 @@ int main(int argc, char *argv[]) {
     }
     // Construct the neural network, layer by layer
     nn_add_layer(nn, LAYER_TYPE_INPUT, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE);
+//    nn_add_layer(nn, LAYER_TYPE_CNN, 256, ACTIVATION_FUNCTION_TYPE_LINEAR);
     nn_add_layer(nn, LAYER_TYPE_FC, 100, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU);
     nn_add_layer(nn, LAYER_TYPE_FC, 50, ACTIVATION_FUNCTION_TYPE_LEAKY_RELU);
     nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID);

@@ -85,7 +85,8 @@ int nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
 float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);
 bool nn_prune_lightest_neuron(nn_t *nn);
 void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size);
-void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int stride, activation_function_type_t activation_function_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size);
+//void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int stride, activation_function_type_t activation_function_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size);
+void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size);
 int nn_quantize(nn_t *nn);
 int nn_dequantize(nn_t *nn);
 

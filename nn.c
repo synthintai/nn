@@ -784,7 +784,7 @@ nn_t *nn_load_model_binary(const char *path)
     goto error;
   // Read each layer's width, layer type, and activation and call nn_add_layer()
   for (uint32_t i = 0; i < depth; i++) {
-    layer_type_t layer_type;
+    uint8_t layer_type;
     uint32_t w;
     uint8_t a;
     if (fread(&layer_type, sizeof(layer_type), 1, file) != 1)

@@ -1212,94 +1212,36 @@ void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_
   }
 }
 
-/*
-void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int stride, activation_function_type_t activation_function_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
-{
-  uint32_t kernel_value;
-
-  *x_out_size = ((x_in_size - kernel_size) / stride) + 1;
-  *y_out_size = ((y_in_size - kernel_size) / stride) + 1;
-  // Assume RGBA—4 channels
-  for (int z = 0; z < 4; z++) {
-    for (int y_out = 0; y_out < *y_out_size; y_out++) {
-      for (int x_out = 0; x_out < *x_out_size; x_out++) {
-        switch (activation_function_type) {
-        case ACTIVATION_FUNCTION_TYPE_LINEAR:
-          kernel_value = 0;
-          for (int ky = 0; ky < kernel_size; ky++) {
-            for (int kx = 0; kx < kernel_size; kx++) {
-              uint8_t pixel = (uint8_t)*(src + z + ((x_out + kx) * stride) * 4 + ((y_out + ky) * stride) * 4 * x_in_size);
-              int8_t w = *(kernel + kx + ky * kernel_size);
-              kernel_value += (uint32_t)(pixel * w);
-            }
-          }
-          kernel_value /= (kernel_size * kernel_size);
-          break;
-        case ACTIVATION_FUNCTION_TYPE_NONE:
-        default:
-          kernel_value = 0;
-          break;
-        }
-        if (z == 3) {
-          // Alpha channel set to max
-          *(dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = -1;
-        } else {
-          *(dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = (char)kernel_value;
-        }
-      }
-    }
-  }
-}
-*/
-
-// 2D convolution on the specified layer.
-// Reads inputs from nn->neuron[layer-1],
-// Uses weights nn->weight[layer][k] and biases nn->bias[layer][k],
-// Writes output feature maps & preacts into nn->neuron[layer] / nn->preact[layer],
-// Applies the layer's own activation nn->activation[layer].
-// Kernel_size and stride are used.
-// x_in_size, y_in_size are the spatial dimensions of the input maps;
-// x_out_size, y_out_size are updated.
+// 2D convolution
+// Reads inputs from nn->neuron[layer-1]
+// Writes output feature maps & preactivations into nn->neuron[layer] / nn->preact[layer]
+// kernel_size is the size of the square kernel (e.g. 3 for 3x3)
+// stride is the step size for the convolution (e.g. 1 for sliding by one pixel)
+// x_in_size, y_in_size are the spatial dimensions of the inputs
+// x_out_size, y_out_size are updated to inform the caller as to the output dimensions
 void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
 {
-  const int num_inputs  = nn->width[layer - 1];
-  const int filter_area  = kernel_size * kernel_size;
+  // For now, we just have a fixed kernel here. kernel_size = 5, stride = 1
+  // This kernel is a simple edge-detection filter that highlights vertical edges.
+  int8_t kernel[5][5] = {{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0}};
+//int8_t kernel[5][5] = {{0,0,0,0,0},{-1,-1,-1,-1,-1},{1,1,1,1,1},{-1,-1,-1,-1,-1},{0,0,0,0,0}};
 
   // Compute output dimensions
   *x_out_size = ((x_in_size - kernel_size) / stride) + 1;
   *y_out_size = ((y_in_size - kernel_size) / stride) + 1;
-  activation_function_t af = activation_function[nn->activation[layer]];
-  // For each output channel (i.e. each "neuron" in this conv layer)
-  for (int k = 0; k < nn->width[layer]; k++) {
-    float b = nn->bias[layer][k];
-    // length == num_inputs * filter_area
-    float *kern = nn->weight[layer][k];
-    // Pointers into the flat neuron & preact arrays
-    float *out_neurons = nn->neuron[layer] + k * (*x_out_size) * (*y_out_size);
-    float *out_preact  = nn->preact[layer] + k * (*x_out_size) * (*y_out_size);
-    // Slide the filter window over y_out, x_out
-    for (int y = 0; y < *y_out_size; y++) {
-      for (int x = 0; x < *x_out_size; x++) {
-        float sum = 0.0f;
-        // Sum over each input feature map
-        for (int f = 0; f < num_inputs; f++) {
-          // Pointer to start of this feature's own map
-          float *in_map = nn->neuron[layer];
-          // Convolve that entire patch:
-          int idx = 0;
-          for (int ry = 0; ry < kernel_size; ry++) {
-            for (int rx = 0; rx < kernel_size; rx++, idx++) {
-              int px = x * stride + rx;
-              int py = y * stride + ry;
-              sum += in_map[py * x_in_size + px] * kern[f * filter_area + idx];
-            }
-          }
+  // Slide the kernel over the inputs (kernel matrix sliding over the input matrix like a raster scan)
+  for (int output_y = 0; output_y < *y_out_size; output_y++) {
+    for (int output_x = 0; output_x < *x_out_size; output_x++) {
+      float sum = 0.0f;
+      for (int kernel_y = 0; kernel_y < kernel_size; kernel_y++) {
+        for (int kernel_x = 0; kernel_x < kernel_size; kernel_x++) {
+          sum += nn->neuron[layer - 1][output_y * stride + kernel_y * x_in_size + output_x * stride + kernel_x] * kernel[kernel_y][kernel_x];
         }
-        // Add bias, store preact, apply activation
-        sum += b;
-        *out_preact++ = sum;
-        *out_neurons++ = af(sum, false);
       }
+      // Add bias, store preactivations, apply activation
+      sum += nn->bias[layer][output_y * (*x_out_size) + output_x];
+      nn->preact[layer][output_y * (*x_out_size) + output_x] = sum;
+      nn->neuron[layer][output_y * (*x_out_size) + output_x] = activation_function[nn->activation[layer]](sum, false);
     }
   }
 }

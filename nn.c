@@ -467,7 +467,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
     for (j = 0; j < (int)nn->width[i]; j++) {
       sum = 0.0f;
       for (k = 0; k < (int)nn->width[i + 1]; k++) {
-        // Apply the derivative of the activation function for the next layer’s neurons
+        // Apply the derivative of the activation function for the next layer's neurons
         sum += nn->loss[i + 1][k] * activation_function[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
       }
       // The chain rule dictates that we should multiply the summed loss by the
@@ -1043,7 +1043,7 @@ int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
     memmove(&nn->weight_quantized[layer][neuron_index], &nn->weight_quantized[layer][neuron_index + 1], sizeof(int8_t *) * (old_width - neuron_index - 1));
     // Shift the single byte biases in bias_quantized[layer]
     memmove(&nn->bias_quantized[layer][neuron_index], &nn->bias_quantized[layer][neuron_index + 1], sizeof(int8_t) * (old_width - neuron_index - 1));
-    // Leave bias_scale[layer] alone (it’s a single float per layer).
+    // Leave bias_scale[layer] alone (it's a single float per layer).
     // The float side arrays (weight[layer], weight_adj[layer], bias[layer]) are NULL here, so we must NOT touch them in quantized mode.
   } else {
     // Shift float pointers for weight[layer] and weight_adj[layer]
@@ -1252,29 +1252,27 @@ void nn_conv2d(char *src, char *dest, int8_t *kernel, int kernel_size, int strid
 }
 */
 
-// 2D convolution on layer “layer” of nn.
-// Reads input feature maps from nn->neuron[layer-1],
+// 2D convolution on the specified layer.
+// Reads inputs from nn->neuron[layer-1],
 // Uses weights nn->weight[layer][k] and biases nn->bias[layer][k],
 // Writes output feature maps & preacts into nn->neuron[layer] / nn->preact[layer],
-// Applies the layer’s own activation nn->activation[layer].
-// Kernel_size and stride are as usual;
-// x_in_size, y_in_size are the spatial dims of the input maps;
-// x_out_size, y_out_size are written out.
+// Applies the layer's own activation nn->activation[layer].
+// Kernel_size and stride are used.
+// x_in_size, y_in_size are the spatial dimensions of the input maps;
+// x_out_size, y_out_size are updated.
 void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
 {
-  const int out_kernels  = nn->width[layer];
-  const int in_features  = nn->width[layer - 1];
+  const int num_inputs  = nn->width[layer - 1];
   const int filter_area  = kernel_size * kernel_size;
 
   // Compute output dimensions
   *x_out_size = ((x_in_size - kernel_size) / stride) + 1;
   *y_out_size = ((y_in_size - kernel_size) / stride) + 1;
-  // Pick up our activation
   activation_function_t af = activation_function[nn->activation[layer]];
-  // For each output channel (i.e. each “neuron” in this conv layer)
-  for (int k = 0; k < out_kernels; k++) {
-    float  b    = nn->bias[layer][k];
-    // length == in_features * filter_area
+  // For each output channel (i.e. each "neuron" in this conv layer)
+  for (int k = 0; k < nn->width[layer]; k++) {
+    float b = nn->bias[layer][k];
+    // length == num_inputs * filter_area
     float *kern = nn->weight[layer][k];
     // Pointers into the flat neuron & preact arrays
     float *out_neurons = nn->neuron[layer] + k * (*x_out_size) * (*y_out_size);
@@ -1284,9 +1282,9 @@ void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, 
       for (int x = 0; x < *x_out_size; x++) {
         float sum = 0.0f;
         // Sum over each input feature map
-        for (int f = 0; f < in_features; f++) {
-          // Pointer to start of this feature’s own map
-          float *in_map = nn->neuron[layer - 1] + f * x_in_size * y_in_size;
+        for (int f = 0; f < num_inputs; f++) {
+          // Pointer to start of this feature's own map
+          float *in_map = nn->neuron[layer];
           // Convolve that entire patch:
           int idx = 0;
           for (int ry = 0; ry < kernel_size; ry++) {

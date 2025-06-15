@@ -1235,7 +1235,7 @@ void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, 
       float sum = 0.0f;
       for (int kernel_y = 0; kernel_y < kernel_size; kernel_y++) {
         for (int kernel_x = 0; kernel_x < kernel_size; kernel_x++) {
-          sum += nn->neuron[layer - 1][output_y * stride + kernel_y * x_in_size + output_x * stride + kernel_x] * kernel[kernel_y][kernel_x];
+          sum += nn->neuron[layer - 1][(output_y * stride + kernel_y) * x_in_size + output_x * stride + kernel_x] * kernel[kernel_y][kernel_x];
         }
       }
       // Add bias, store preactivations, apply activation

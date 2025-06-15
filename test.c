@@ -39,7 +39,7 @@ int main(int argc, char *argv[]) {
     float *prediction = nn_predict(model, data->input[i]);
     int true_positive = 0;
     int false_positive = 0;
-    // Binary decision: target >= 0.5 → positive class, else negative
+    // Binary decision: target >= 0.5 to be in the positive class, else negative
     for (int j = 0; j < model->width[model->depth - 1]; j++) {
       if (data->target[i][j] >= 0.5f) {
         if (prediction[j] >= 0.5f) {

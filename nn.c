@@ -187,26 +187,32 @@ static void forward_propagation(nn_t *nn)
       case LAYER_TYPE_CNN:
         // Convolutional Neural Network Layer
         int xo, yo;
-        // TODO: Fill in kernel_size and stride
-        nn_conv2d(nn, i, 3, 1, 16, 16, &xo, &yo);
+        // TODO: Fill in kernel_size and stride from layer definition
+        nn_conv2d(nn, i, 5, 1, 16, 16, &xo, &yo);
         break;
       case LAYER_TYPE_POOL:
         // Pooling Layer
+        // TODO: Need to stitch in pooling code here
         break;
       case LAYER_TYPE_LSTM:
         // Long Short-Term Memory Layer
+        // TODO
         break;
       case LAYER_TYPE_GRU:
         // Gated Recurrent Unit Layer
+        // TODO
         break;
       case LAYER_TYPE_RNN:
         // Recurrent Neural Network Layer
+        // TODO
         break;
       case LAYER_TYPE_ATTENTION:
         // Attention Layer
+        // TODO
         break;
       case LAYER_TYPE_TRANSFORMER:
         // Transformer Layer
+        // TODO
         break;
       case LAYER_TYPE_INPUT:
       case LAYER_TYPE_NONE:

@@ -1229,8 +1229,10 @@ void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, 
 {
   // For now, we just have a fixed kernel here. kernel_size = 5, stride = 1
   // This kernel is a simple edge-detection filter that highlights vertical edges.
-  int8_t kernel[5][5] = {{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0}};
-//int8_t kernel[5][5] = {{0,0,0,0,0},{-1,-1,-1,-1,-1},{1,1,1,1,1},{-1,-1,-1,-1,-1},{0,0,0,0,0}};
+//int8_t kernel_0[5][5] = {{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0}};
+  int8_t kernel[5][5] = {{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0}};
+//int8_t kernel_1[5][5] = {{0,0,0,0,0},{-1,-1,-1,-1,-1},{1,1,1,1,1},{-1,-1,-1,-1,-1},{0,0,0,0,0}};
+//int8_t kernel_1[5][5] = {{0,0,0,0,0},{0,0,0,0,0},{1,1,1,1,1},{0,0,0,0,0},{0,0,0,0,0}};
 
   // Compute output dimensions
   *x_out_size = ((x_in_size - kernel_size) / stride) + 1;
@@ -1250,6 +1252,23 @@ void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, 
       nn->neuron[layer][output_y * (*x_out_size) + output_x] = activation_function[nn->activation[layer]](sum, false);
     }
   }
+/*
+  // Slide the kernel over the inputs (kernel matrix sliding over the input matrix like a raster scan)
+  for (int output_y = 0; output_y < *y_out_size; output_y++) {
+    for (int output_x = 0; output_x < *x_out_size; output_x++) {
+      float sum = 0.0f;
+      for (int kernel_y = 0; kernel_y < kernel_size; kernel_y++) {
+        for (int kernel_x = 0; kernel_x < kernel_size; kernel_x++) {
+          sum += nn->neuron[layer - 1][(output_y * stride + kernel_y) * x_in_size + output_x * stride + kernel_x] * kernel_1[kernel_y][kernel_x];
+        }
+      }
+      // Add bias, store preactivations, apply activation
+      sum += nn->bias[layer][output_y * (*x_out_size) + output_x];
+      nn->preact[layer][output_y * (*x_out_size) + output_x] = sum;
+      nn->neuron[layer][196 + output_y * (*x_out_size) + output_x] = activation_function[nn->activation[layer]](sum, false);
+    }
+  }
+*/
 }
 
 // In-place quantization of nn_t

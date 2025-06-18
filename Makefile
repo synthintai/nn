@@ -49,6 +49,9 @@ quantize: quantize.c libnn.a
 dequantize: dequantize.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
+samples.csv:
+	curl -s -S -L -f --compressed http://synthint.ai/training_data/$@.gz -z $@ -o $@.gz && gunzip $@.gz
+
 $(CSV_OUTPUTS)&: samples.csv split.py
 	python split.py
 
@@ -60,3 +63,6 @@ check:
 
 clean:
 	$(RM) data_prep.o nn.o libnn.a libnn.so export import train test predict quantize dequantize prune summary model.* tags $(CSV_OUTPUTS)
+
+distclean: clean
+	$(RM) samples.csv

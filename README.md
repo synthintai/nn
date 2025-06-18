@@ -121,7 +121,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Run cppcheck and fix all errors and warnings from static analysis
 * Add nn_load_model_memory for embedded use
 * Change pooling action to layer type that can be added to the model
 * Change conv2d action to layer type that can be added to the model
@@ -133,3 +132,5 @@ Licensed under the [Apache License 2.0](./LICENSE).
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
 * Support CNN layer types in add_layer(), forward_propagate(), and nn_train().
 * Add RNN feature
+* Implement softmax layer
+* Run cppcheck and fix all errors and warnings from static analysis

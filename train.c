@@ -23,7 +23,7 @@ int main(int argc, char *argv[]) {
   }
   const char *model_path = argv[1];
   // Tunable hyperparameters
-  int num_inputs = 256;
+  int num_inputs = 28 * 28;
   int num_outputs = 10;
   float learning_rate = 0.02f;
   float annealing = 1.0f;

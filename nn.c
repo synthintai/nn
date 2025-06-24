@@ -188,7 +188,13 @@ static void forward_propagation(nn_t *nn)
         // Convolutional Neural Network Layer
         int xo, yo;
         // TODO: Fill in kernel_size and stride from layer definition
-        nn_conv2d(nn, i, 5, 1, 16, 16, &xo, &yo);
+        // For now, we just have a fixed kernel here. kernel_size = 5, stride = 1
+        // This kernel is a simple edge-detection filter that highlights vertical edges.
+        int8_t kernel[5][5] = {{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0}};
+        //int8_t kernel[5][5] = {{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0}};
+        //int8_t kernel[5][5] = {{0,0,0,0,0},{-1,-1,-1,-1,-1},{1,1,1,1,1},{-1,-1,-1,-1,-1},{0,0,0,0,0}};
+        //int8_t kernel[5][5] = {{0,0,0,0,0},{0,0,0,0,0},{1,1,1,1,1},{0,0,0,0,0},{0,0,0,0,0}};
+        nn_conv2d(nn, i, (int8_t *)kernel, 5, 1, 16, 16, &xo, &yo);
         break;
       case LAYER_TYPE_POOL:
         // Pooling Layer
@@ -1225,15 +1231,8 @@ void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_
 // stride is the step size for the convolution (e.g. 1 for sliding by one pixel)
 // x_in_size, y_in_size are the spatial dimensions of the inputs
 // x_out_size, y_out_size are updated to inform the caller as to the output dimensions
-void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
+void nn_conv2d(nn_t *nn, int layer, int8_t *kernel, int kernel_size, int stride, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
 {
-  // For now, we just have a fixed kernel here. kernel_size = 5, stride = 1
-  // This kernel is a simple edge-detection filter that highlights vertical edges.
-//int8_t kernel_0[5][5] = {{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0}};
-  int8_t kernel[5][5] = {{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0}};
-//int8_t kernel_1[5][5] = {{0,0,0,0,0},{-1,-1,-1,-1,-1},{1,1,1,1,1},{-1,-1,-1,-1,-1},{0,0,0,0,0}};
-//int8_t kernel_1[5][5] = {{0,0,0,0,0},{0,0,0,0,0},{1,1,1,1,1},{0,0,0,0,0},{0,0,0,0,0}};
-
   // Compute output dimensions
   *x_out_size = ((x_in_size - kernel_size) / stride) + 1;
   *y_out_size = ((y_in_size - kernel_size) / stride) + 1;
@@ -1243,7 +1242,7 @@ void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, 
       float sum = 0.0f;
       for (int kernel_y = 0; kernel_y < kernel_size; kernel_y++) {
         for (int kernel_x = 0; kernel_x < kernel_size; kernel_x++) {
-          sum += nn->neuron[layer - 1][(output_y * stride + kernel_y) * x_in_size + output_x * stride + kernel_x] * kernel[kernel_y][kernel_x];
+          sum += nn->neuron[layer - 1][(output_y * stride + kernel_y) * x_in_size + output_x * stride + kernel_x] * *(kernel + kernel_y * kernel_size + kernel_x);
         }
       }
       // Add bias, store preactivations, apply activation
@@ -1252,23 +1251,6 @@ void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in_size, 
       nn->neuron[layer][output_y * (*x_out_size) + output_x] = activation_function[nn->activation[layer]](sum, false);
     }
   }
-/*
-  // Slide the kernel over the inputs (kernel matrix sliding over the input matrix like a raster scan)
-  for (int output_y = 0; output_y < *y_out_size; output_y++) {
-    for (int output_x = 0; output_x < *x_out_size; output_x++) {
-      float sum = 0.0f;
-      for (int kernel_y = 0; kernel_y < kernel_size; kernel_y++) {
-        for (int kernel_x = 0; kernel_x < kernel_size; kernel_x++) {
-          sum += nn->neuron[layer - 1][(output_y * stride + kernel_y) * x_in_size + output_x * stride + kernel_x] * kernel_1[kernel_y][kernel_x];
-        }
-      }
-      // Add bias, store preactivations, apply activation
-      sum += nn->bias[layer][output_y * (*x_out_size) + output_x];
-      nn->preact[layer][output_y * (*x_out_size) + output_x] = sum;
-      nn->neuron[layer][196 + output_y * (*x_out_size) + output_x] = activation_function[nn->activation[layer]](sum, false);
-    }
-  }
-*/
 }
 
 // In-place quantization of nn_t

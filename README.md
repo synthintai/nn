@@ -57,18 +57,16 @@ make
 
 To train:
 ```
-./train
+./train model.txt
 ```
-The model can be further trained (or fine-tuned) simply by re-running the training program, which further trains a model file if it exists.
+The model can be further trained (or fine-tuned) simply by re-running the training program, which further trains a model file if it already exists.
 
-The included example data is the Semeion Handwritten Digit Data Set from the UCI Machine Learning Repository at:
-
-http://archive.ics.uci.edu/ml/datasets/semeion+handwritten+digit
+The included example data is the MNIST data set.
 
 
 To evaluate the model performance:
 ```
-./test
+./test model.txt
 ```
 
 
@@ -77,22 +75,16 @@ To use the trained model:
 ./predict
 ```
 
-To prune the model (removes the least contributing neuron):
+To prune the model (this example removes the 10 least contributing neuron):
 
 ```
-./prune
+./prune model.txt 10
 ```
 
 To quantize the trained model (which is floating point by default), run the following command:
 
 ```
 ./quantize model.txt model_quantized.txt
-```
-
-To test the quantized model:
-
-```
-./test_quantized
 ```
 
 ## Architecture
@@ -121,16 +113,14 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
+* Complete the CNN layer implementation
 * Add nn_load_model_memory for embedded use
 * Change pooling action to layer type that can be added to the model
-* Change conv2d action to layer type that can be added to the model
-* Add stride and padding parms to conv2d
+* Add padding parms to conv2d
 * If using padding: feature_map_size = (N-F+2*P)/(S+1) <--the 2P is the padding
-* Add dropout layer
-* How to handle back prop for pooling layer?
-* Number of kernels/filters dictates the number of output channels of a CNN layer
+* Add dropout layer type
+* Handle back prop for pooling layer
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
-* Support CNN layer types in add_layer(), forward_propagate(), and nn_train().
 * Add RNN feature
 * Implement softmax layer
 * Run cppcheck and fix all errors and warnings from static analysis

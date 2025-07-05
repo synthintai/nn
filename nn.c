@@ -186,15 +186,7 @@ static void forward_propagation(nn_t *nn)
         break;
       case LAYER_TYPE_CNN:
         // Convolutional Neural Network Layer
-        int xo, yo;
-        // TODO: Fill in kernel_size and stride from layer definition
-        // For now, we just have a fixed kernel here. kernel_size = 5, stride = 1
-        // This kernel is a simple edge-detection filter that highlights vertical edges.
-        int8_t kernel[5][5] = {{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0},{0,0,1,0,0}};
-        //int8_t kernel[5][5] = {{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0},{0,-1,1,-1,0}};
-        //int8_t kernel[5][5] = {{0,0,0,0,0},{-1,-1,-1,-1,-1},{1,1,1,1,1},{-1,-1,-1,-1,-1},{0,0,0,0,0}};
-        //int8_t kernel[5][5] = {{0,0,0,0,0},{0,0,0,0,0},{1,1,1,1,1},{0,0,0,0,0},{0,0,0,0,0}};
-        nn_conv2d(nn, i, (int8_t *)kernel, 5, 1, 16, 16, &xo, &yo);
+        nn_conv2d(nn, i, 3, 1, 28, 28);
         break;
       case LAYER_TYPE_POOL:
         // Pooling Layer
@@ -337,7 +329,7 @@ void nn_free(nn_t *nn)
   free(nn);
 }
 
-int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation)
+int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, void *config)
 {
   // Increase depth by one
   nn->depth++;
@@ -568,7 +560,8 @@ nn_t *nn_load_model_ascii(const char *path)
       nn_free(nn);
       return NULL;
     }
-    if (nn_add_layer(nn, layer_type, w, act) != 0) {
+    // TODO: Handle CNN layers with config
+    if (nn_add_layer(nn, layer_type, w, act, NULL) != 0) {
       fclose(file);
       nn_free(nn);
       return NULL;
@@ -805,7 +798,8 @@ nn_t *nn_load_model_binary(const char *path)
       goto error;
     if (fread(&a, sizeof(a), 1, file) != 1)
       goto error;
-    if (nn_add_layer(nn, layer_type, (int)w, (int)a) != 0)
+    // TODO: Handle CNN layers with config
+    if (nn_add_layer(nn, layer_type, (int)w, (int)a, NULL) != 0)
       goto cleanup;
   }
   // Allocate neuron/loss/preact arrays
@@ -1170,23 +1164,23 @@ bool nn_prune_lightest_neuron(nn_t *nn)
   return true;
 }
 
-void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
+void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in, int y_in)
 {
   uint32_t pool_value;
   uint32_t pool_value_temp;
 
-  *x_out_size = ((x_in_size - filter_size) / stride) + 1;
-  *y_out_size = ((y_in_size - filter_size) / stride) + 1;
+  int x_out = ((x_in - filter_size) / stride) + 1;
+  int y_out = ((y_in - filter_size) / stride) + 1;
   // Assume src and dest are RGBA (4 channels)
   for (int z = 0; z < 4; z++) {
-    for (int y_out = 0; y_out < *y_out_size; y_out++) {
-      for (int x_out = 0; x_out < *x_out_size; x_out++) {
+    for (int y = 0; y < y_out; y++) {
+      for (int x = 0; x < x_out; x++) {
         switch (pooling_type) {
         case POOLING_TYPE_MIN:
           pool_value = 255;
           for (int fy = 0; fy < filter_size; fy++) {
             for (int fx = 0; fx < filter_size; fx++) {
-              pool_value_temp = (uint8_t)*(src + z + ((x_out + fx) * stride) * 4 + ((y_out + fy) * stride) * 4 * x_in_size);
+              pool_value_temp = (uint8_t)*(src + z + ((x + fx) * stride) * 4 + ((y + fy) * stride) * 4 * x_in);
               if (pool_value_temp < pool_value) {
                 pool_value = pool_value_temp;
               }
@@ -1197,7 +1191,7 @@ void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_
           pool_value = 0;
           for (int fy = 0; fy < filter_size; fy++) {
             for (int fx = 0; fx < filter_size; fx++) {
-              pool_value_temp = (uint8_t)*(src + z + ((x_out + fx) * stride) * 4 + ((y_out + fy) * stride) * 4 * x_in_size);
+              pool_value_temp = (uint8_t)*(src + z + ((x + fx) * stride) * 4 + ((y + fy) * stride) * 4 * x_in);
               if (pool_value_temp > pool_value) {
                 pool_value = pool_value_temp;
               }
@@ -1208,7 +1202,7 @@ void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_
           pool_value = 0;
           for (int fy = 0; fy < filter_size; fy++) {
             for (int fx = 0; fx < filter_size; fx++) {
-              pool_value += (uint8_t)*(src + z + ((x_out + fx) * stride) * 4 + ((y_out + fy) * stride) * 4 * x_in_size);
+              pool_value += (uint8_t)*(src + z + ((x + fx) * stride) * 4 + ((y + fy) * stride) * 4 * x_in);
             }
           }
           pool_value /= (filter_size * filter_size);
@@ -1218,39 +1212,77 @@ void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_
           pool_value = 0;
           break;
         }
-        *(dest + z + (x_out * 4) + (y_out * (*x_out_size) * 4)) = (char)pool_value;
+        *(dest + z + (x * 4) + (y * x_out * 4)) = (char)pool_value;
       }
     }
   }
 }
+
 
 // 2D convolution
 // Reads inputs from nn->neuron[layer-1]
 // Writes output feature maps & preactivations into nn->neuron[layer] / nn->preact[layer]
 // kernel_size is the size of the square kernel (e.g. 3 for 3x3)
 // stride is the step size for the convolution (e.g. 1 for sliding by one pixel)
-// x_in_size, y_in_size are the spatial dimensions of the inputs
-// x_out_size, y_out_size are updated to inform the caller as to the output dimensions
-void nn_conv2d(nn_t *nn, int layer, int8_t *kernel, int kernel_size, int stride, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size)
+// x_in, y_in are the spatial dimensions of the inputs
+void nn_conv2d(nn_t *nn, int layer, int ksize, int stride, int x_in, int y_in)
 {
-  // Compute output dimensions
-  *x_out_size = ((x_in_size - kernel_size) / stride) + 1;
-  *y_out_size = ((y_in_size - kernel_size) / stride) + 1;
-  // Slide the kernel over the inputs (kernel matrix sliding over the input matrix like a raster scan)
-  for (int output_y = 0; output_y < *y_out_size; output_y++) {
-    for (int output_x = 0; output_x < *x_out_size; output_x++) {
-      float sum = 0.0f;
-      for (int kernel_y = 0; kernel_y < kernel_size; kernel_y++) {
-        for (int kernel_x = 0; kernel_x < kernel_size; kernel_x++) {
-          sum += nn->neuron[layer - 1][(output_y * stride + kernel_y) * x_in_size + output_x * stride + kernel_x] * *(kernel + kernel_y * kernel_size + kernel_x);
-        }
-      }
-      // Add bias, store preactivations, apply activation
-      sum += nn->bias[layer][output_y * (*x_out_size) + output_x];
-      nn->preact[layer][output_y * (*x_out_size) + output_x] = sum;
-      nn->neuron[layer][output_y * (*x_out_size) + output_x] = activation_function[nn->activation[layer]](sum, false);
+    // Derive channel counts from previous bookkeeping
+    const int plane_in = y_in * x_in;
+    const int in_c     = nn->width[layer - 1] / plane_in;
+
+    int x_out = ((x_in - ksize) / stride) + 1;
+    int y_out = ((y_in - ksize) / stride) + 1;
+    const int plane_out = y_out * x_out;
+    const int out_c     = nn->width[layer] / plane_out;
+    // Sanity‑check shapes
+    if ((in_c <= 0) || (out_c <= 0) ||
+        ((uint32_t)out_c * plane_out != nn->width[layer])) {
+        fprintf(stderr, "conv2d: inconsistent shape (in_c=%d, out_c=%d, plane_out=%d, width[%d]=%u)\n", in_c, out_c, plane_out, layer, nn->width[layer]);
+        return;
     }
-  }
+    // Perform the convolution
+    for (int oc = 0; oc < out_c; ++oc) {
+        const float bias = nn->quantized ? ((float)nn->bias_quantized[layer][oc] * nn->bias_scale[layer]) : nn->bias[layer][oc];
+        float *dst = nn->neuron[layer] + oc * plane_out;
+        float *pre = nn->preact[layer] + oc * plane_out;
+        for (int oy = 0; oy < y_out; ++oy) {
+            const int in_y = oy * stride;
+            for (int ox = 0; ox < x_out; ++ox) {
+                const int in_x = ox * stride;
+                float sum = 0.0f;
+                for (int ic = 0; ic < in_c; ++ic) {
+                    const float *src = nn->neuron[layer - 1] + ic * plane_in + in_y * x_in + in_x;
+                    if (nn->quantized) {
+                        const int8_t *krow = nn->weight_quantized[layer][oc * in_c + ic];
+                        const float   wsc  = nn->weight_scale[layer][oc * in_c + ic];
+                        const int8_t *kptr = krow;
+                        const float  *sptr = src;
+                        for (int ky = 0; ky < ksize; ++ky) {
+                            for (int kx = 0; kx < ksize; ++kx)
+                                sum += sptr[kx] * (float)kptr[kx] * wsc;
+                            sptr += x_in;
+                            kptr += ksize;
+                        }
+                    } else {
+                        const float *krow = nn->weight[layer][oc * in_c + ic];
+                        const float *kptr = krow;
+                        const float *sptr = src;
+                        for (int ky = 0; ky < ksize; ++ky) {
+                            for (int kx = 0; kx < ksize; ++kx)
+                                sum += sptr[kx] * kptr[kx];
+                            sptr += x_in;
+                            kptr += ksize;
+                        }
+                    }
+                }
+                const int oidx = oy * x_out + ox;
+                sum += bias;
+                pre[oidx] = sum;
+                dst[oidx] = activation_function[nn->activation[layer]](sum, false);
+            }
+        }
+    }
 }
 
 // In-place quantization of nn_t

@@ -8,6 +8,9 @@
 #ifndef NN_H
 #define NN_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 // NN API Version
 #define NN_VERSION_MAJOR 0
 #define NN_VERSION_MINOR 1
@@ -48,6 +51,28 @@ typedef enum {
   POOLING_TYPE_AVG,
 } pooling_type_t;
 
+typedef enum {
+  NN_INIT_NONE = 0,      // No initialization
+  NN_INIT_ZEROS,         // Initialize weights to zero
+  NN_INIT_ONES,          // Initialize weights to one
+  NN_INIT_RANDOM,        // Random initialization
+  NN_INIT_XAVIER,        // Xavier initialization
+  NN_INIT_HE,            // He initialization
+} nn_init_t;
+
+typedef struct {
+  uint16_t in_h;         // Input height
+  uint16_t in_w;         // Input width
+  uint16_t in_channels;  // # Input feature maps
+  uint16_t out_channels; // # Output feature maps
+  uint8_t kernel_size;   // Kernel width and height (square)
+  uint8_t stride;        // Stride
+  uint8_t padding;       // Padding (same for all sides)
+  uint8_t dilation;      // Dilation (same for both dimensions)
+  nn_init_t weight_init; // How to initialize weights
+  nn_init_t bias_init;   // How to initialize biases
+} cnn_t;
+
 typedef struct {
   bool quantized;         // Indicates if the network is quantized
   uint8_t version_major;  // Major version of the network model
@@ -73,7 +98,7 @@ typedef struct {
 uint32_t nn_version(void);
 nn_t *nn_init(void);
 void nn_free(nn_t *nn);
-int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation);
+int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, void *config);
 int nn_save_model_ascii(nn_t *nn, const char *path);
 int nn_save_model_binary(nn_t *nn, const char *path);
 nn_t *nn_load_model_ascii(const char *path);
@@ -84,8 +109,8 @@ float *nn_predict(nn_t *nn, float *inputs);
 int nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
 float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);
 bool nn_prune_lightest_neuron(nn_t *nn);
-void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size);
-void nn_conv2d(nn_t *nn, int layer, int8_t *kernel, int kernel_size, int stride, int x_in_size, int y_in_size, int *x_out_size, int *y_out_size);
+void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in, int y_in);
+void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in, int y_in);
 int nn_quantize(nn_t *nn);
 int nn_dequantize(nn_t *nn);
 

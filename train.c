@@ -64,11 +64,25 @@ int main(int argc, char *argv[]) {
       return 1;
     }
     // Construct the neural network, layer by layer
-    nn_add_layer(nn, LAYER_TYPE_INPUT, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE);
-//  nn_add_layer(nn, LAYER_TYPE_CNN, 196, ACTIVATION_FUNCTION_TYPE_LINEAR);
-    nn_add_layer(nn, LAYER_TYPE_FC, 100, ACTIVATION_FUNCTION_TYPE_RELU);
-    nn_add_layer(nn, LAYER_TYPE_FC, 50, ACTIVATION_FUNCTION_TYPE_RELU);
-    nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID);
+    nn_add_layer(nn, LAYER_TYPE_INPUT, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, NULL);
+/*
+    cnn_t cnn = {
+      .in_h = 28,
+      .in_w = 28,
+      .in_channels = 1,
+      .out_channels = 4,
+      .kernel_size = 3,
+      .stride = 1,
+      .padding = 0,
+      .dilation = 1,
+      .weight_init = NN_INIT_XAVIER,
+      .bias_init = NN_INIT_ZEROS,
+    };
+    nn_add_layer(nn, LAYER_TYPE_CNN, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (cnn_t *)&cnn);
+*/
+    nn_add_layer(nn, LAYER_TYPE_FC, 100, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
+    nn_add_layer(nn, LAYER_TYPE_FC, 50, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
+    nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, NULL);
   } else {
     printf("Using existing model file: %s\n", model_path);
     // Verify that model dimensions match expected inputs/outputs

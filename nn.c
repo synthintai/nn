@@ -277,7 +277,6 @@ void nn_free(nn_t *nn)
       }
       free(nn->weight[layer]);
       free(nn->weight_adj[layer]);
-
       // Free the bias array for this layer
       free(nn->bias[layer]);
     }
@@ -329,88 +328,85 @@ void nn_free(nn_t *nn)
   free(nn);
 }
 
-int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, void *config)
+nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, void *config)
 {
   // Increase depth by one
   nn->depth++;
   // Reallocate the layer_type array
   nn->layer_type = (uint8_t *)realloc(nn->layer_type, nn->depth * sizeof(*nn->layer_type));
   if (nn->layer_type == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->layer_type[nn->depth - 1] = (uint8_t)layer_type;
   // Reallocate the width array
   nn->width = (uint32_t *)realloc(nn->width, nn->depth * sizeof(*nn->width));
   if (nn->width == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->width[nn->depth - 1] = (uint32_t)width;
   // Reallocate the activation array
   nn->activation = (uint8_t *)realloc(nn->activation, nn->depth * sizeof(*nn->activation));
   if (nn->activation == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->activation[nn->depth - 1] = (uint8_t)activation;
   // Reallocate neuron, loss, and preact arrays
   nn->neuron = (float **)realloc(nn->neuron, nn->depth * sizeof(float *));
   if (nn->neuron == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->loss = (float **)realloc(nn->loss, nn->depth * sizeof(float *));
   if (nn->loss == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->preact = (float **)realloc(nn->preact, nn->depth * sizeof(float *));
   if (nn->preact == NULL)
-    return 1;
-  // For layer 0, we do not allocate neuron/loss/preact (input is provided externally)
-  if (nn->depth > 1) {
-    // Allocate neuron, loss, preact arrays for this new layer
-    nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
-    if (nn->neuron[nn->depth - 1] == NULL)
-      return 1;
-    nn->loss[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
-    if (nn->loss[nn->depth - 1] == NULL)
-      return 1;
-    nn->preact[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
-    if (nn->preact[nn->depth - 1] == NULL)
-      return 1;
-  }
-  // Reallocate top level weight, weight_adj, and bias arrays
+    return NN_ERROR_OUT_OF_MEMORY;
+  // Reallocate the weight, weight_adj, and bias arrays
   nn->weight = (float ***)realloc(nn->weight, (nn->depth) * sizeof(float **));
   if (nn->weight == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->weight_adj = (float ***)realloc(nn->weight_adj, (nn->depth) * sizeof(float **));
   if (nn->weight_adj == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->weight_scale = (float **)realloc(nn->weight_scale, (nn->depth) * sizeof(float *));
   if (nn->weight_scale == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->bias = (float **)realloc(nn->bias, (nn->depth) * sizeof(float *));
   if (nn->bias == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
   nn->bias_scale = (float *)realloc(nn->bias_scale, (nn->depth) * sizeof(float));
   if (nn->bias_scale == NULL)
-    return 1;
+    return NN_ERROR_OUT_OF_MEMORY;
+  // For layer 0, we do not allocate neuron/loss/preact (input is provided externally)
   if (nn->depth > 1) {
-    // Allocate per-neuron pointers in this new layer
+    // Allocate neuron, loss, preact arrays in the previous layer for this new layer
+    nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+    if (nn->neuron[nn->depth - 1] == NULL)
+      return NN_ERROR_OUT_OF_MEMORY;
+    nn->loss[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+    if (nn->loss[nn->depth - 1] == NULL)
+      return NN_ERROR_OUT_OF_MEMORY;
+    nn->preact[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+    if (nn->preact[nn->depth - 1] == NULL)
+      return NN_ERROR_OUT_OF_MEMORY;
     nn->weight[nn->depth - 1] = (float **)malloc(nn->width[nn->depth - 1] * sizeof(float *));
     if (nn->weight[nn->depth - 1] == NULL)
-      return 1;
+      return NN_ERROR_OUT_OF_MEMORY;
     nn->weight_adj[nn->depth - 1] = (float **)malloc(nn->width[nn->depth - 1] * sizeof(float *));
     if (nn->weight_adj[nn->depth - 1] == NULL)
-      return 1;
+      return NN_ERROR_OUT_OF_MEMORY;
     nn->weight_scale[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
     if (nn->weight_scale[nn->depth - 1] == NULL)
-      return 1;
+      return NN_ERROR_OUT_OF_MEMORY;
     nn->bias[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
     if (nn->bias[nn->depth - 1] == NULL)
-      return 1;
+      return NN_ERROR_OUT_OF_MEMORY;
     // Initialize weights, weight_adj, and biases for each neuron in this layer
     for (int neuron = 0; neuron < (int)nn->width[nn->depth - 1]; neuron++) {
       // Allocate the weight vector for this neuron
       nn->weight[nn->depth - 1][neuron] = (float *)malloc(nn->width[nn->depth - 2] * sizeof(float));
       if (nn->weight[nn->depth - 1][neuron] == NULL)
-        return 1;
+        return NN_ERROR_OUT_OF_MEMORY;
       // Allocate the weight_adj vector for this neuron
       nn->weight_adj[nn->depth - 1][neuron] = (float *)malloc(nn->width[nn->depth - 2] * sizeof(float));
       if (nn->weight_adj[nn->depth - 1][neuron] == NULL)
-        return 1;
+        return NN_ERROR_OUT_OF_MEMORY;
       // Xavier (Glorot) initialization for each weight
       float range = sqrtf(6.0f / (nn->width[nn->depth - 1] + nn->width[nn->depth - 2]));
       for (int i = 0; i < (int)nn->width[nn->depth - 2]; i++) {
@@ -420,7 +416,7 @@ int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, v
       nn->bias[nn->depth - 1][neuron] = 0.0f;
     }
   }
-  return 0;
+  return NN_ERROR_NONE;
 }
 
 // Returns the total error of the network given a set of inputs and target outputs
@@ -912,11 +908,11 @@ error:
 }
 
 // Saves a neural net model to a file.
-int nn_save_model_ascii(nn_t *nn, const char *path)
+nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
 {
   FILE *file = fopen(path, "w");
   if (file == NULL)
-    return 1;
+    return NN_ERROR_FILE_WRITE;
   // Write quantized flag: 0 = floating, 1 = fixed point
   fprintf(file, "%d\n", nn->quantized ? 1 : 0);
   // Write model version (major, minor, patch, build)
@@ -960,15 +956,15 @@ int nn_save_model_ascii(nn_t *nn, const char *path)
     }
   }
   fclose(file);
-  return 0;
+  return NN_ERROR_NONE;
 }
 
 // Exports a neural-net model as raw binary.
-int nn_save_model_binary(nn_t *nn, const char *path)
+nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
 {
   FILE *file = fopen(path, "wb");
   if (!file)
-    return 1;
+    return NN_ERROR_FILE_WRITE;
   // Quantized flag
   uint8_t qflag = nn->quantized ? 1 : 0;
   fwrite(&qflag, sizeof(qflag), 1, file);
@@ -1020,13 +1016,13 @@ int nn_save_model_binary(nn_t *nn, const char *path)
     }
   }
   fclose(file);
-  return 0;
+  return NN_ERROR_NONE;
 }
 
-int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
+nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
 {
   if (nn == NULL || layer <= 0 || layer >= (int)nn->depth || neuron_index < 0 || neuron_index >= (int)nn->width[layer]) {
-    return 1;
+    return NN_ERROR_INVALID_ARGUMENT;
   }
   int old_width = nn->width[layer];
   // Shift out neuron / preact / loss in this layer
@@ -1098,7 +1094,7 @@ int nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   }
   // Decrement the width of this layer
   nn->width[layer] = old_width - 1;
-  return 0;
+  return NN_ERROR_NONE;
 }
 
 // Returns the total weight associated with a given neuron, defined as the sum
@@ -1286,11 +1282,10 @@ void nn_conv2d(nn_t *nn, int layer, int ksize, int stride, int x_in, int y_in)
 }
 
 // In-place quantization of nn_t
-int nn_quantize(nn_t *nn)
+nn_error_t nn_quantize(nn_t *nn)
 {
   if (!nn || nn->quantized) {
-    // Nothing to do
-    return -1;
+    return NN_ERROR_INVALID_ARGUMENT;
   }
   const int depth = (int)nn->depth;
   // Mark the network as quantized
@@ -1300,9 +1295,8 @@ int nn_quantize(nn_t *nn)
   nn->weight_scale = malloc(depth * sizeof(float *));
   nn->bias_quantized = malloc(depth * sizeof(int8_t *));
   nn->bias_scale = malloc(depth * sizeof(float));
-  if (!nn->weight_quantized || !nn->weight_scale || !nn->bias_quantized ||
-      !nn->bias_scale) {
-    return -1;
+  if (!nn->weight_quantized || !nn->weight_scale || !nn->bias_quantized || !nn->bias_scale) {
+    return NN_ERROR_OUT_OF_MEMORY;
   }
   // Initialize layer 0 entries
   nn->weight_quantized[0] = NULL;
@@ -1318,7 +1312,7 @@ int nn_quantize(nn_t *nn)
     nn->weight_scale[L] = malloc(curr_w * sizeof(float));
     nn->bias_quantized[L] = malloc(curr_w * sizeof(int8_t));
     if (!nn->weight_quantized[L] || !nn->weight_scale[L] || !nn->bias_quantized[L]) {
-      return -1;
+      return NN_ERROR_OUT_OF_MEMORY;
     }
     // Compute one bias_scale for this layer
     float min_b = nn->bias[L][0], max_b = min_b;
@@ -1338,7 +1332,7 @@ int nn_quantize(nn_t *nn)
       // Allocate the int8 weight-vector
       nn->weight_quantized[L][n] = malloc(prev_w * sizeof(int8_t));
       if (!nn->weight_quantized[L][n])
-        return -1;
+        return NN_ERROR_OUT_OF_MEMORY;
       // Compute per-neuron weight scale
       float min_w = nn->weight[L][n][0], max_w = min_w;
       for (int k = 1; k < prev_w; k++) {
@@ -1378,15 +1372,15 @@ int nn_quantize(nn_t *nn)
   free(nn->weight);
   free(nn->weight_adj);
   free(nn->bias);
-  return 0;
+  return NN_ERROR_NONE;
 }
 
 // Dequantize in-place: rebuild float weights/biases from the fixed-point model.
 // Returns 0 on success, -1 on error.
-int nn_dequantize(nn_t *nn)
+nn_error_t nn_dequantize(nn_t *nn)
 {
   if (!nn || !nn->quantized) {
-    return -1;
+    return NN_ERROR_INVALID_ARGUMENT;
   }
   const int depth = (int)nn->depth;
   // Allocate top-level float pointers
@@ -1394,7 +1388,7 @@ int nn_dequantize(nn_t *nn)
   nn->weight_adj = malloc(depth * sizeof(*nn->weight_adj));
   nn->bias = malloc(depth * sizeof(*nn->bias));
   if (!nn->weight || !nn->weight_adj || !nn->bias) {
-    return -1;
+    return NN_ERROR_OUT_OF_MEMORY;
   }
   // For each layer >=1, rebuild float weight, weight_adj, bias
   for (int L = 1; L < depth; L++) {
@@ -1405,7 +1399,7 @@ int nn_dequantize(nn_t *nn)
     nn->weight_adj[L] = malloc(curr * sizeof(*nn->weight_adj[L]));
     nn->bias[L] = malloc(curr * sizeof(*nn->bias[L]));
     if (!nn->weight[L] || !nn->weight_adj[L] || !nn->bias[L]) {
-      return -1;
+      return NN_ERROR_OUT_OF_MEMORY;
     }
     // For each neuron, allocate its float row, fill from quantized
     for (int i = 0; i < curr; i++) {
@@ -1413,7 +1407,7 @@ int nn_dequantize(nn_t *nn)
       nn->weight[L][i] = malloc(prev * sizeof(*nn->weight[L][i]));
       nn->weight_adj[L][i] = malloc(prev * sizeof(*nn->weight_adj[L][i]));
       if (!nn->weight[L][i] || !nn->weight_adj[L][i]) {
-        return -1;
+        return NN_ERROR_OUT_OF_MEMORY;
       }
       // Dequantize each weight
       float wscale = nn->weight_scale[L][i];
@@ -1439,5 +1433,5 @@ int nn_dequantize(nn_t *nn)
   free(nn->bias_scale);
   // Mark as float mode
   nn->quantized = false;
-  return 0;
+  return NN_ERROR_NONE;
 }

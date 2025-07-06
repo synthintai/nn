@@ -14,8 +14,31 @@
 // NN API Version
 #define NN_VERSION_MAJOR 0
 #define NN_VERSION_MINOR 1
-#define NN_VERSION_PATCH 5
+#define NN_VERSION_PATCH 6
 #define NN_VERSION_BUILD 0
+
+typedef enum {
+  NN_ERROR_NONE = 0,                    // No error
+  NN_ERROR_INVALID_ARGUMENT = -1,       // Invalid argument passed to function
+  NN_ERROR_OUT_OF_MEMORY = -2,          // Out of memory
+  NN_ERROR_FILE_NOT_FOUND = -3,         // File not found
+  NN_ERROR_FILE_READ = -4,              // Error reading file
+  NN_ERROR_FILE_WRITE = -5,             // Error writing file
+  NN_ERROR_UNSUPPORTED_LAYER = -6,      // Unsupported layer type
+  NN_ERROR_UNSUPPORTED_ACTIVATION = -7, // Unsupported activation function
+  NN_ERROR_UNSUPPORTED_POOLING = -8,    // Unsupported pooling type
+  NN_ERROR_INVALID_LAYER = -9,          // Invalid layer index
+  NN_ERROR_INVALID_ACTIVATION = -10,    // Invalid activation function index
+  NN_ERROR_INVALID_POOLING = -11,       // Invalid pooling type index
+  NN_ERROR_INVALID_INIT = -12,          // Invalid initialization type
+  NN_ERROR_INVALID_CONFIG = -13,        // Invalid configuration for layer
+  NN_ERROR_INVALID_VERSION = -14,       // Invalid version of the neural network model
+  NN_ERROR_QUANTIZATION = -15,          // Error during quantization
+  NN_ERROR_DEQUANTIZATION = -16,        // Error during dequantization
+  NN_ERROR_TRAINING = -17,              // Error during training
+  NN_ERROR_PREDICTION = -18,            // Error during prediction
+  NN_ERROR_UNKNOWN = -19                // Unknown error
+} nn_error_t;
 
 typedef enum {
   ACTIVATION_FUNCTION_TYPE_NONE = 0,
@@ -98,20 +121,20 @@ typedef struct {
 uint32_t nn_version(void);
 nn_t *nn_init(void);
 void nn_free(nn_t *nn);
-int nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, void *config);
-int nn_save_model_ascii(nn_t *nn, const char *path);
-int nn_save_model_binary(nn_t *nn, const char *path);
+nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, void *config);
+nn_error_t nn_save_model_ascii(nn_t *nn, const char *path);
+nn_error_t nn_save_model_binary(nn_t *nn, const char *path);
 nn_t *nn_load_model_ascii(const char *path);
 nn_t *nn_load_model_binary(const char *path);
 float nn_error(nn_t *nn, float *inputs, float *targets);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);
-int nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
+nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
 float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);
 bool nn_prune_lightest_neuron(nn_t *nn);
 void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in, int y_in);
 void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in, int y_in);
-int nn_quantize(nn_t *nn);
-int nn_dequantize(nn_t *nn);
+nn_error_t nn_quantize(nn_t *nn);
+nn_error_t nn_dequantize(nn_t *nn);
 
 #endif /* NN_H */

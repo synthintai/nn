@@ -271,15 +271,27 @@ void nn_free(nn_t *nn)
   // There are no weights/biases for layer 0, so start from layer 1.
   if (!nn->quantized) {
     for (int layer = 1; layer < (int)nn->depth; layer++) {
-      // Free each neuron's weight and weight_adj in this layer
-      for (int i = 0; i < (int)nn->width[layer]; i++) {
-        free(nn->weight[layer][i]);
-        free(nn->weight_adj[layer][i]);
+      if (nn->layer_type[layer] == LAYER_TYPE_CNN) {
+        cnn_t *c = nn->config[layer];
+        int kernels = c->out_channels * c->in_channels;
+        for (int k = 0; k < kernels; ++k) {
+          free(nn->weight[layer][k]);
+          free(nn->weight_adj[layer][k]);
+        }
+        free(nn->weight[layer]);
+        free(nn->weight_adj[layer]);
+        // length = out_channels
+        free(nn->bias[layer]);
+      } else {
+        // Free each neuron's weight and weight_adj in this layer
+        for (int i = 0; i < (int)nn->width[layer]; i++) {
+         free(nn->weight[layer][i]);
+         free(nn->weight_adj[layer][i]);
+        }
+        free(nn->weight[layer]);
+        free(nn->weight_adj[layer]);
+        free(nn->bias[layer]);
       }
-      free(nn->weight[layer]);
-      free(nn->weight_adj[layer]);
-      // Free the bias array for this layer
-      free(nn->bias[layer]);
       free(nn->config[layer]);
       free(nn->neuron[layer]);
       free(nn->loss[layer]);
@@ -298,18 +310,30 @@ void nn_free(nn_t *nn)
   // Free quantized side arrays if allocated
   if (nn->quantized) {
     for (int layer = 1; layer < (int)nn->depth; layer++) {
-      int curr_w = nn->width[layer];
-      for (int neuron = 0; neuron < curr_w; neuron++) {
-        free(nn->weight_quantized[layer][neuron]);
+      if (nn->layer_type[layer] == LAYER_TYPE_CNN) {
+        cnn_t *c = nn->config[layer];
+        int kernels = c->out_channels * c->in_channels;
+        for (int k = 0; k < kernels; ++k) {
+          free(nn->weight[layer][k]);
+          free(nn->weight_adj[layer][k]);
+        }
+        free(nn->weight[layer]);
+        free(nn->weight_adj[layer]);
+        // length = out_channels
+        free(nn->bias[layer]);
+      } else {
+        int curr_w = nn->width[layer];
+        for (int neuron = 0; neuron < curr_w; neuron++) {
+          free(nn->weight_quantized[layer][neuron]);
+        }
+        free(nn->weight_quantized[layer]);
+        free(nn->weight_scale[layer]);
+        free(nn->bias_quantized[layer]);
       }
-      free(nn->weight_quantized[layer]);
-      free(nn->weight_scale[layer]);
-      free(nn->bias_quantized[layer]);
-      // Also free the float side pointers that were allocated for prediction
+      free(nn->config[layer]);
       free(nn->neuron[layer]);
       free(nn->loss[layer]);
       free(nn->preact[layer]);
-      free(nn->config[layer]);
     }
     free(nn->weight_quantized);
     free(nn->weight_scale);
@@ -398,35 +422,64 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
     nn->preact[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
     if (nn->preact[nn->depth - 1] == NULL)
       return NN_ERROR_OUT_OF_MEMORY;
-    nn->weight[nn->depth - 1] = (float **)malloc(nn->width[nn->depth - 1] * sizeof(float *));
-    if (nn->weight[nn->depth - 1] == NULL)
-      return NN_ERROR_OUT_OF_MEMORY;
-    nn->weight_adj[nn->depth - 1] = (float **)malloc(nn->width[nn->depth - 1] * sizeof(float *));
-    if (nn->weight_adj[nn->depth - 1] == NULL)
-      return NN_ERROR_OUT_OF_MEMORY;
-    nn->weight_scale[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
-    if (nn->weight_scale[nn->depth - 1] == NULL)
-      return NN_ERROR_OUT_OF_MEMORY;
-    nn->bias[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
-    if (nn->bias[nn->depth - 1] == NULL)
-      return NN_ERROR_OUT_OF_MEMORY;
-    // Initialize weights, weight_adj, and biases for each neuron in this layer
-    for (int neuron = 0; neuron < (int)nn->width[nn->depth - 1]; neuron++) {
-      // Allocate the weight vector for this neuron
-      nn->weight[nn->depth - 1][neuron] = (float *)malloc(nn->width[nn->depth - 2] * sizeof(float));
-      if (nn->weight[nn->depth - 1][neuron] == NULL)
+    // One row per kernel = out_c * in_c
+    // Each row holds (kernel_size * kernel_size) weights
+    if (layer_type == LAYER_TYPE_CNN) {
+      int kernels = cnn->out_channels * cnn->in_channels;
+      int k_elems = cnn->kernel_size * cnn->kernel_size;
+      nn->weight[nn->depth - 1] = malloc(kernels * sizeof(float *));
+      nn->weight_adj[nn->depth - 1] = malloc(kernels * sizeof(float *));
+      nn->weight_scale[nn->depth - 1] = malloc(kernels * sizeof(float));
+      nn->bias[nn->depth - 1] = malloc(cnn->out_channels * sizeof(float));
+      if (!nn->weight[nn->depth - 1] || !nn->weight_adj[nn->depth - 1] || !nn->weight_scale[nn->depth - 1] || !nn->bias[nn->depth - 1])
         return NN_ERROR_OUT_OF_MEMORY;
-      // Allocate the weight_adj vector for this neuron
-      nn->weight_adj[nn->depth - 1][neuron] = (float *)malloc(nn->width[nn->depth - 2] * sizeof(float));
-      if (nn->weight_adj[nn->depth - 1][neuron] == NULL)
-        return NN_ERROR_OUT_OF_MEMORY;
-      // Xavier (Glorot) initialization for each weight
-      float range = sqrtf(6.0f / (nn->width[nn->depth - 1] + nn->width[nn->depth - 2]));
-      for (int i = 0; i < (int)nn->width[nn->depth - 2]; i++) {
-        nn->weight[nn->depth - 1][neuron][i] = range * 2.0f * ((rand() / (float)RAND_MAX) - 0.5f);
+      for (int k = 0; k < kernels; ++k) {
+        nn->weight[nn->depth - 1][k] = malloc(k_elems * sizeof(float));
+        nn->weight_adj[nn->depth - 1][k] = malloc(k_elems * sizeof(float));
+        if (!nn->weight[nn->depth - 1][k] || !nn->weight_adj[nn->depth - 1][k])
+          return NN_ERROR_OUT_OF_MEMORY;
+        // Xavier initialisation over kernel elements
+        float range = sqrtf(6.0f / (k_elems + k_elems));
+        for (int i = 0; i < k_elems; ++i) {
+          nn->weight[nn->depth - 1][k][i] = range * 2.0f * ((rand() / (float)RAND_MAX) - 0.5f);
+          nn->weight_adj [nn->depth - 1][k][i] = 0.0f;
+        }
+        nn->weight_scale[nn->depth - 1][k] = 0.0f;  /* filled during quantise */
       }
-      // Initialize bias = 0
-      nn->bias[nn->depth - 1][neuron] = 0.0f;
+      // one bias per output-channel
+      for (int oc = 0; oc < cnn->out_channels; ++oc)
+        nn->bias[nn->depth - 1][oc] = 0.0f;
+    } else {
+      nn->weight[nn->depth - 1] = (float **)malloc(nn->width[nn->depth - 1] * sizeof(float *));
+      if (nn->weight[nn->depth - 1] == NULL)
+        return NN_ERROR_OUT_OF_MEMORY;
+      nn->weight_adj[nn->depth - 1] = (float **)malloc(nn->width[nn->depth - 1] * sizeof(float *));
+      if (nn->weight_adj[nn->depth - 1] == NULL)
+        return NN_ERROR_OUT_OF_MEMORY;
+      nn->weight_scale[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+      if (nn->weight_scale[nn->depth - 1] == NULL)
+        return NN_ERROR_OUT_OF_MEMORY;
+      nn->bias[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+      if (nn->bias[nn->depth - 1] == NULL)
+        return NN_ERROR_OUT_OF_MEMORY;
+      // Initialize weights, weight_adj, and biases for each neuron in this layer
+      for (int neuron = 0; neuron < (int)nn->width[nn->depth - 1]; neuron++) {
+        // Allocate the weight vector for this neuron
+        nn->weight[nn->depth - 1][neuron] = (float *)malloc(nn->width[nn->depth - 2] * sizeof(float));
+        if (nn->weight[nn->depth - 1][neuron] == NULL)
+          return NN_ERROR_OUT_OF_MEMORY;
+        // Allocate the weight_adj vector for this neuron
+        nn->weight_adj[nn->depth - 1][neuron] = (float *)malloc(nn->width[nn->depth - 2] * sizeof(float));
+        if (nn->weight_adj[nn->depth - 1][neuron] == NULL)
+          return NN_ERROR_OUT_OF_MEMORY;
+        // Xavier (Glorot) initialization for each weight
+        float range = sqrtf(6.0f / (nn->width[nn->depth - 1] + nn->width[nn->depth - 2]));
+        for (int i = 0; i < (int)nn->width[nn->depth - 2]; i++) {
+          nn->weight[nn->depth - 1][neuron][i] = range * 2.0f * ((rand() / (float)RAND_MAX) - 0.5f);
+        }
+        // Initialize bias = 0
+        nn->bias[nn->depth - 1][neuron] = 0.0f;
+      }
     }
   }
   return NN_ERROR_NONE;
@@ -491,9 +544,23 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   }
   // Update biases (gradient descent step)
   for (i = 1; i < (int)nn->depth; i++) {
-    for (j = 0; j < (int)nn->width[i]; j++) {
-      nn->bias[i][j] += nn->loss[i][j] * rate;
-    }
+    if (nn->layer_type[i] == LAYER_TYPE_CNN) {
+      cnn_t *cnn = nn->config[i];
+      int out_c  = cnn->out_channels;
+      int x_out  = ((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1;
+      int y_out  = ((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1;
+      int plane  = x_out * y_out;
+      for (j = 0; j < out_c; ++j) {
+        float db = 0.0f;
+        for (k = 0; k < plane; ++k)
+          db += nn->loss[i][j * plane + k];
+        nn->bias[i][j] += db * rate;
+      }
+    } else {
+        // FC / output layers
+        for (j = 0; j < (int)nn->width[i]; j++)
+            nn->bias[i][j] += nn->loss[i][j] * rate;
+    }  
   }
   // Calculate the weight adjustments. Note that their update is delayed until
   // after full backprop traversal. The weights cannot be updated while
@@ -502,18 +569,56 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   // apply them all at once later.
   // Compute weight adjustments (store in weight_adj)
   for (i = (int)nn->depth - 1; i > 0; i--) {
-    for (j = 0; j < (int)nn->width[i]; j++) {
-      for (k = 0; k < (int)nn->width[i - 1]; k++) {
-        nn->weight_adj[i][j][k] = nn->loss[i][j] * nn->neuron[i - 1][k];
+    if (nn->layer_type[i] == LAYER_TYPE_CNN) {
+      // Convolution gradient
+      cnn_t *cnn = nn->config[i];
+      int in_c   = cnn->in_channels;
+      int out_c  = cnn->out_channels;
+      int ksize  = cnn->kernel_size;
+      int x_out  = ((cnn->in_w - ksize) / cnn->stride) + 1;
+      int y_out  = ((cnn->in_h - ksize) / cnn->stride) + 1;
+      int plane_out = x_out * y_out;
+      int in_plane  = cnn->in_w * cnn->in_h;
+      for (int oc = 0; oc < out_c; ++oc) {
+        for (int ic = 0; ic < in_c; ++ic) {
+          float *adj = nn->weight_adj[i][oc * in_c + ic];
+          memset(adj, 0, ksize * ksize * sizeof(float));
+          for (int oy = 0; oy < y_out; ++oy) {
+            int in_y = oy * cnn->stride;
+            for (int ox = 0; ox < x_out; ++ox) {
+              int in_x = ox * cnn->stride;
+              float delta = nn->loss[i][oc * plane_out + oy * x_out + ox];
+              const float *src = nn->neuron[i - 1] + ic * in_plane + in_y * cnn->in_w + in_x;
+              for (int ky = 0; ky < ksize; ++ky) {
+                for (int kx = 0; kx < ksize; ++kx) {
+                  adj[ky * ksize + kx] += delta * src[ky * cnn->in_w + kx];
+                }
+              }
+            }
+          }
+        }
       }
+    } else {
+      // FC / output layers
+      for (j = 0; j < (int)nn->width[i]; j++)
+        for (k = 0; k < (int)nn->width[i - 1]; k++)
+          nn->weight_adj[i][j][k] = nn->loss[i][j] * nn->neuron[i - 1][k];
     }
   }
   // Apply weight adjustments
   for (i = (int)nn->depth - 1; i > 0; i--) {
-    for (j = 0; j < (int)nn->width[i]; j++) {
-      for (k = 0; k < (int)nn->width[i - 1]; k++) {
-        nn->weight[i][j][k] += nn->weight_adj[i][j][k] * rate;
-      }
+    if (nn->layer_type[i] == LAYER_TYPE_CNN) {
+      cnn_t *cnn = nn->config[i];
+      int kernels = cnn->out_channels * cnn->in_channels;
+      int k_elems = cnn->kernel_size * cnn->kernel_size;
+      for (j = 0; j < kernels; ++j)
+        for (k = 0; k < k_elems; ++k)
+          nn->weight[i][j][k] += nn->weight_adj[i][j][k] * rate;
+    } else {
+      // FC / output layers
+      for (j = 0; j < (int)nn->width[i]; j++)
+        for (k = 0; k < (int)nn->width[i - 1]; k++)
+          nn->weight[i][j][k] += nn->weight_adj[i][j][k] * rate;
     }
   }
   // Return the post-update error
@@ -564,13 +669,31 @@ nn_t *nn_load_model_ascii(const char *path)
   // Call nn_add_layer for each (layer_type, width, activation)
   for (int i = 0; i < depth; i++) {
     int layer_type, w, act;
-    if (fscanf(file, "%d %d %d\n", &layer_type, &w, &act) != 3) {
+    // peek layer_type first to know if cnn_t follows
+    if (fscanf(file, "%d", &layer_type) != 1) {
       fclose(file);
       nn_free(nn);
       return NULL;
     }
-    // TODO: Handle CNN layers with config
-    if (nn_add_layer(nn, layer_type, w, act, NULL) != 0) {
+    if (fscanf(file, "%d %d", &w, &act) != 2) {
+      fclose(file);
+      nn_free(nn);
+      return NULL;
+    }
+    cnn_t ctmp, *cptr = NULL;
+    if (layer_type == LAYER_TYPE_CNN) {
+      if (fscanf(file, " %hu %hu %hhu %hhu %hhu %hhu %hhu %hhu", &ctmp.in_h, &ctmp.in_w, &ctmp.in_channels, &ctmp.out_channels, &ctmp.kernel_size, &ctmp.stride, &ctmp.padding, &ctmp.dilation) != 8) {
+        fclose(file);
+        nn_free(nn);
+        return NULL;
+      }
+      cptr = &ctmp;
+      // nn_add_layer will recompute width
+      w = 0;
+    }
+    // Consume '\n'
+    fgetc(file);
+    if (nn_add_layer(nn, layer_type, w, act, cptr) != 0) {
       fclose(file);
       nn_free(nn);
       return NULL;
@@ -604,20 +727,40 @@ nn_t *nn_load_model_ascii(const char *path)
       if (fscanf(file, "%f\n", &dummy_scale) != 1) {
         goto cleanup_float;
       }
-      for (int i = 0; i < (int)nn->width[layer]; i++) {
-        // Skip weight_scale (0)
-        if (fscanf(file, "%f\n", &dummy_scale) != 1) {
+      if (nn->layer_type[layer] == LAYER_TYPE_CNN) {
+        cnn_t *c = nn->config[layer];
+        int kernels = c->out_channels * c->in_channels;
+        int k_elems = c->kernel_size * c->kernel_size;
+        // Extra dummy line that the saver emits before the kernels
+        if (fscanf(file, "%f\n", &dummy_scale) != 1)
           goto cleanup_float;
-        }
-        // Read float weights
-        for (int j = 0; j < (int)nn->width[layer - 1]; j++) {
-          if (fscanf(file, "%f\n", &nn->weight[layer][i][j]) != 1) {
+        // kernels
+        for (int k = 0; k < kernels; ++k) {
+          // per-kernel weight-scale placeholder
+          if (fscanf(file, "%f\n", &dummy_scale) != 1)
             goto cleanup_float;
+          for (int e = 0; e < k_elems; ++e) {
+            if (fscanf(file, "%f\n", &nn->weight[layer][k][e]) != 1)
+              goto cleanup_float;
           }
         }
-        // Read float bias
-        if (fscanf(file, "%f\n", &nn->bias[layer][i]) != 1) {
-          goto cleanup_float;
+        // One bias per output channel
+        for (int oc = 0; oc < c->out_channels; ++oc) {
+          if (fscanf(file, "%f\n", &nn->bias[layer][oc]) != 1)
+            goto cleanup_float;
+        }
+      } else {
+        // Fully-connected / output layer
+        for (int i = 0; i < (int)nn->width[layer]; i++) {
+          // Skip weight_scale (0)
+          if (fscanf(file, "%f\n", &dummy_scale) != 1)
+            goto cleanup_float;
+          for (int j = 0; j < (int)nn->width[layer - 1]; j++) {
+            if (fscanf(file, "%f\n", &nn->weight[layer][i][j]) != 1)
+              goto cleanup_float;
+          }
+          if (fscanf(file, "%f\n", &nn->bias[layer][i]) != 1)
+            goto cleanup_float;
         }
       }
     }
@@ -658,8 +801,7 @@ nn_t *nn_load_model_ascii(const char *path)
   nn->weight_scale = (float **)malloc(sizeof(float *) * nn->depth);
   nn->bias_quantized = (int8_t **)malloc(sizeof(int8_t *) * nn->depth);
   nn->bias_scale = (float *)malloc(sizeof(float) * nn->depth);
-  if (!nn->weight_quantized || !nn->weight_scale || !nn->bias_quantized ||
-      !nn->bias_scale) {
+  if (!nn->weight_quantized || !nn->weight_scale || !nn->bias_quantized || !nn->bias_scale) {
     goto cleanup_quant_top;
   }
   // Initialize layer 0 entries
@@ -807,9 +949,14 @@ nn_t *nn_load_model_binary(const char *path)
       goto error;
     if (fread(&a, sizeof(a), 1, file) != 1)
       goto error;
-    // TODO: Handle CNN layers with config
-    if (nn_add_layer(nn, layer_type, (int)w, (int)a, NULL) != 0)
-      goto cleanup;
+    cnn_t ctmp, *cptr = NULL;
+    if (layer_type == LAYER_TYPE_CNN) {
+      if (fread(&ctmp, sizeof(ctmp), 1, file) != 1)
+        goto error;
+      cptr = &ctmp; w = 0;
+    }
+    if (nn_add_layer(nn, layer_type, (int)w, (int)a, cptr) != 0)
+     goto cleanup;
   }
   // Allocate neuron/loss/preact arrays
   nn->neuron = realloc(nn->neuron, depth * sizeof(float *));
@@ -932,9 +1079,15 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
   fprintf(file, "%hhu %hhu %hhu %hhu\n", nn->version_major, nn->version_minor, nn->version_patch, nn->version_build);
   // Write depth
   fprintf(file, "%" PRId32 "\n", nn->depth);
-  // Write each layer's width, layer type, and activation
+  // Write each layer's type, width, and activation
   for (int i = 0; i < (int)nn->depth; i++) {
-    fprintf(file, "%d %" PRId32 " %d\n", nn->layer_type[i], nn->width[i], nn->activation[i]);
+    // fprintf(file, "%d %" PRId32 " %d\n", nn->layer_type[i], nn->width[i], nn->activation[i]);
+    fprintf(file, "%d %" PRId32 " %d", nn->layer_type[i], nn->width[i], nn->activation[i]);
+    if (nn->layer_type[i] == LAYER_TYPE_CNN) {
+      cnn_t *c = nn->config[i];
+      fprintf(file, " %d %d %d %d %d %d %d %d", c->in_h, c->in_w, c->in_channels, c->out_channels, c->kernel_size, c->stride, c->padding, c->dilation);
+    }
+    fputc('\n', file);
   }
   // Write weights & biases
   if (!nn->quantized) {
@@ -942,13 +1095,31 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
     for (int layer = 1; layer < (int)nn->depth; layer++) {
       // bias_scale placeholder
       fprintf(file, "0\n");
-      for (int i = 0; i < (int)nn->width[layer]; i++) {
-        // weight_scale placeholder
+      if (nn->layer_type[layer] == LAYER_TYPE_CNN) {
+        cnn_t *c = nn->config[layer];
+        int kernels = c->out_channels * c->in_channels;
+        int k_elems = c->kernel_size * c->kernel_size;
+        // One scale + k² weights per kernel
+        // Bias scale placeholder
         fprintf(file, "0\n");
-        for (int j = 0; j < (int)nn->width[layer - 1]; j++) {
-          fprintf(file, "%f\n", nn->weight[layer][i][j]);
+        for (int k = 0; k < kernels; ++k) {
+          // Weight scale
+          fprintf(file, "0\n");
+          for (int e = 0; e < k_elems; ++e)
+            fprintf(file, "%f\n", nn->weight[layer][k][e]);
         }
-        fprintf(file, "%f\n", nn->bias[layer][i]);
+        for (int oc = 0; oc < c->out_channels; ++oc)
+          fprintf(file, "%f\n", nn->bias[layer][oc]);
+      } else {
+        // FC / output
+        for (int i = 0; i < (int)nn->width[layer]; i++) {
+          // weight_scale placeholder
+          fprintf(file, "0\n");
+          for (int j = 0; j < (int)nn->width[layer - 1]; j++) {
+            fprintf(file, "%f\n", nn->weight[layer][i][j]);
+          }
+          fprintf(file, "%f\n", nn->bias[layer][i]);
+        }
       }
     }
   } else {
@@ -972,7 +1143,7 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
   return NN_ERROR_NONE;
 }
 
-// Exports a neural-net model as raw binary.
+// Exports a neural net model as raw binary
 nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
 {
   FILE *file = fopen(path, "wb");
@@ -997,6 +1168,11 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
     fwrite(&layer_type, sizeof(layer_type), 1, file);
     fwrite(&w, sizeof(w), 1, file);
     fwrite(&a, sizeof(a), 1, file);
+    if (layer_type == LAYER_TYPE_CNN) {
+      cnn_t *c = nn->config[i];
+      // Struct is POD -> dump
+      fwrite(c, sizeof(cnn_t), 1, file);
+    }
   }
   // Weights & biases
   if (!nn->quantized) {
@@ -1232,12 +1408,11 @@ void nn_conv2d(nn_t *nn, int layer)
 {
     // Derive channel counts from previous bookkeeping
     cnn_t *cnn = nn->config[layer];
-    const int plane_in = cnn->in_h * cnn->in_w;
-    const int in_c = nn->width[layer] / plane_in;
+    const int in_c = cnn->in_channels;
     int x_out = ((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1;
     int y_out = ((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1;
     const int plane_out = y_out * x_out;
-    const int out_c = nn->width[layer] / plane_out;
+    const int out_c = cnn->out_channels;
     // Sanity‑check shapes
     if ((in_c <= 0) || (out_c <= 0) ||
         ((uint32_t)out_c * plane_out != nn->width[layer])) {
@@ -1255,7 +1430,7 @@ void nn_conv2d(nn_t *nn, int layer)
                 const int in_x = ox * cnn->stride;
                 float sum = 0.0f;
                 for (int ic = 0; ic < in_c; ++ic) {
-                    const float *src = nn->neuron[layer - 1] + ic * plane_in + in_y * cnn->in_w + in_x;
+                    const float *src = nn->neuron[layer - 1] + ic * cnn->in_h * cnn->in_w + in_y * cnn->in_w + in_x;
                     if (nn->quantized) {
                         const int8_t *krow = nn->weight_quantized[layer][oc * in_c + ic];
                         const float   wsc  = nn->weight_scale[layer][oc * in_c + ic];

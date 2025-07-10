@@ -86,8 +86,8 @@ typedef enum {
 typedef struct {
   uint16_t in_h;         // Input height
   uint16_t in_w;         // Input width
-  uint16_t in_channels;  // # Input feature maps
-  uint16_t out_channels; // # Output feature maps
+  uint8_t in_channels;  // # Input feature maps
+  uint8_t out_channels; // # Output feature maps
   uint8_t kernel_size;   // Kernel width and height (square)
   uint8_t stride;        // Stride
   uint8_t padding;       // Padding (same for all sides)
@@ -106,6 +106,7 @@ typedef struct {
   uint32_t *width;        // Number of neurons in each layer (can vary from layer to layer)
   uint8_t *layer_type;    // Type of each layer
   uint8_t *activation;    // Activation function used for each layer
+  void **config;          // Configuration for each layer (ex: CNN parameters)
   float **neuron;         // Output value for each neuron in each layer
   float **loss;           // Error derivative for each neuron in each layer
   float **preact;         // Neuron values before activation function is applied for each neuron in each layer
@@ -133,7 +134,7 @@ nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index);
 float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);
 bool nn_prune_lightest_neuron(nn_t *nn);
 void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in, int y_in);
-void nn_conv2d(nn_t *nn, int layer, int kernel_size, int stride, int x_in, int y_in);
+void nn_conv2d(nn_t *nn, int layer);
 nn_error_t nn_quantize(nn_t *nn);
 nn_error_t nn_dequantize(nn_t *nn);
 

@@ -186,7 +186,7 @@ static void forward_propagation(nn_t *nn)
         break;
       case LAYER_TYPE_CNN:
         // Convolutional Neural Network Layer
-        nn_conv2d(nn, i, 3, 1, 28, 28);
+        nn_conv2d(nn, i);
         break;
       case LAYER_TYPE_POOL:
         // Pooling Layer
@@ -247,6 +247,7 @@ nn_t *nn_init(void)
   nn->layer_type = NULL;
   nn->width = NULL;
   nn->activation = NULL;
+  nn->config = NULL;
   // Floats-only pointers are NULL initially
   nn->neuron = NULL;
   nn->loss = NULL;
@@ -279,11 +280,7 @@ void nn_free(nn_t *nn)
       free(nn->weight_adj[layer]);
       // Free the bias array for this layer
       free(nn->bias[layer]);
-    }
-  }
-  // Free neuron, loss, preact arrays (no entry for layer 0 beyond input pointer)
-  if (!nn->quantized) {
-    for (int layer = 1; layer < (int)nn->depth; layer++) {
+      free(nn->config[layer]);
       free(nn->neuron[layer]);
       free(nn->loss[layer]);
       free(nn->preact[layer]);
@@ -296,6 +293,7 @@ void nn_free(nn_t *nn)
     free(nn->layer_type);
     free(nn->width);
     free(nn->activation);
+    free(nn->config);
   }
   // Free quantized side arrays if allocated
   if (nn->quantized) {
@@ -307,47 +305,64 @@ void nn_free(nn_t *nn)
       free(nn->weight_quantized[layer]);
       free(nn->weight_scale[layer]);
       free(nn->bias_quantized[layer]);
+      // Also free the float side pointers that were allocated for prediction
+      free(nn->neuron[layer]);
+      free(nn->loss[layer]);
+      free(nn->preact[layer]);
+      free(nn->config[layer]);
     }
     free(nn->weight_quantized);
     free(nn->weight_scale);
     free(nn->bias_quantized);
     free(nn->bias_scale);
-    // Also free the float side pointers that were allocated for prediction
-    for (int layer = 1; layer < (int)nn->depth; layer++) {
-      free(nn->neuron[layer]);
-      free(nn->loss[layer]);
-      free(nn->preact[layer]);
-    }
     free(nn->neuron);
     free(nn->loss);
     free(nn->preact);
     free(nn->layer_type);
     free(nn->width);
     free(nn->activation);
+    free(nn->config);
   }
   free(nn);
 }
 
 nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, void *config)
 {
+  cnn_t *cnn = NULL;
+
   // Increase depth by one
   nn->depth++;
-  // Reallocate the layer_type array
   nn->layer_type = (uint8_t *)realloc(nn->layer_type, nn->depth * sizeof(*nn->layer_type));
   if (nn->layer_type == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
+  // nn->depth - 1 is the index of the new layer that we are adding
   nn->layer_type[nn->depth - 1] = (uint8_t)layer_type;
-  // Reallocate the width array
   nn->width = (uint32_t *)realloc(nn->width, nn->depth * sizeof(*nn->width));
   if (nn->width == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
   nn->width[nn->depth - 1] = (uint32_t)width;
-  // Reallocate the activation array
+  if (layer_type == LAYER_TYPE_CNN) {
+    if (config == NULL) {
+      return NN_ERROR_INVALID_CONFIG;
+    }
+    cnn = (cnn_t *)config;
+    nn->width[nn->depth - 1] = cnn->out_channels * (((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1) * (((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1);
+  }
   nn->activation = (uint8_t *)realloc(nn->activation, nn->depth * sizeof(*nn->activation));
   if (nn->activation == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
   nn->activation[nn->depth - 1] = (uint8_t)activation;
-  // Reallocate neuron, loss, and preact arrays
+  nn->config = (void **)realloc(nn->config, nn->depth * sizeof(*nn->config));
+  if (nn->config == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->config[nn->depth - 1] = NULL;
+  if (layer_type == LAYER_TYPE_CNN) {
+    nn->config[nn->depth - 1] = (void *)malloc(sizeof(cnn_t));
+    if (nn->config[nn->depth - 1] == NULL)
+      return NN_ERROR_OUT_OF_MEMORY;
+    // Copy the CNN configuration
+    memcpy(nn->config[nn->depth - 1], config, sizeof(cnn_t));
+  }
   nn->neuron = (float **)realloc(nn->neuron, nn->depth * sizeof(float *));
   if (nn->neuron == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
@@ -357,7 +372,6 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
   nn->preact = (float **)realloc(nn->preact, nn->depth * sizeof(float *));
   if (nn->preact == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
-  // Reallocate the weight, weight_adj, and bias arrays
   nn->weight = (float ***)realloc(nn->weight, (nn->depth) * sizeof(float **));
   if (nn->weight == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
@@ -375,7 +389,6 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
     return NN_ERROR_OUT_OF_MEMORY;
   // For layer 0, we do not allocate neuron/loss/preact (input is provided externally)
   if (nn->depth > 1) {
-    // Allocate neuron, loss, preact arrays in the previous layer for this new layer
     nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
     if (nn->neuron[nn->depth - 1] == NULL)
       return NN_ERROR_OUT_OF_MEMORY;
@@ -1214,23 +1227,17 @@ void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_
   }
 }
 
-
 // 2D convolution
-// Reads inputs from nn->neuron[layer-1]
-// Writes output feature maps & preactivations into nn->neuron[layer] / nn->preact[layer]
-// kernel_size is the size of the square kernel (e.g. 3 for 3x3)
-// stride is the step size for the convolution (e.g. 1 for sliding by one pixel)
-// x_in, y_in are the spatial dimensions of the inputs
-void nn_conv2d(nn_t *nn, int layer, int ksize, int stride, int x_in, int y_in)
+void nn_conv2d(nn_t *nn, int layer)
 {
     // Derive channel counts from previous bookkeeping
-    const int plane_in = y_in * x_in;
-    const int in_c     = nn->width[layer - 1] / plane_in;
-
-    int x_out = ((x_in - ksize) / stride) + 1;
-    int y_out = ((y_in - ksize) / stride) + 1;
+    cnn_t *cnn = nn->config[layer];
+    const int plane_in = cnn->in_h * cnn->in_w;
+    const int in_c = nn->width[layer] / plane_in;
+    int x_out = ((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1;
+    int y_out = ((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1;
     const int plane_out = y_out * x_out;
-    const int out_c     = nn->width[layer] / plane_out;
+    const int out_c = nn->width[layer] / plane_out;
     // Sanity‑check shapes
     if ((in_c <= 0) || (out_c <= 0) ||
         ((uint32_t)out_c * plane_out != nn->width[layer])) {
@@ -1243,32 +1250,32 @@ void nn_conv2d(nn_t *nn, int layer, int ksize, int stride, int x_in, int y_in)
         float *dst = nn->neuron[layer] + oc * plane_out;
         float *pre = nn->preact[layer] + oc * plane_out;
         for (int oy = 0; oy < y_out; ++oy) {
-            const int in_y = oy * stride;
+            const int in_y = oy * cnn->stride;
             for (int ox = 0; ox < x_out; ++ox) {
-                const int in_x = ox * stride;
+                const int in_x = ox * cnn->stride;
                 float sum = 0.0f;
                 for (int ic = 0; ic < in_c; ++ic) {
-                    const float *src = nn->neuron[layer - 1] + ic * plane_in + in_y * x_in + in_x;
+                    const float *src = nn->neuron[layer - 1] + ic * plane_in + in_y * cnn->in_w + in_x;
                     if (nn->quantized) {
                         const int8_t *krow = nn->weight_quantized[layer][oc * in_c + ic];
                         const float   wsc  = nn->weight_scale[layer][oc * in_c + ic];
                         const int8_t *kptr = krow;
                         const float  *sptr = src;
-                        for (int ky = 0; ky < ksize; ++ky) {
-                            for (int kx = 0; kx < ksize; ++kx)
+                        for (int ky = 0; ky < cnn->kernel_size; ++ky) {
+                            for (int kx = 0; kx < cnn->kernel_size; ++kx)
                                 sum += sptr[kx] * (float)kptr[kx] * wsc;
-                            sptr += x_in;
-                            kptr += ksize;
+                            sptr += cnn->in_w;
+                            kptr += cnn->kernel_size;
                         }
                     } else {
                         const float *krow = nn->weight[layer][oc * in_c + ic];
                         const float *kptr = krow;
                         const float *sptr = src;
-                        for (int ky = 0; ky < ksize; ++ky) {
-                            for (int kx = 0; kx < ksize; ++kx)
+                        for (int ky = 0; ky < cnn->kernel_size; ++ky) {
+                            for (int kx = 0; kx < cnn->kernel_size; ++kx)
                                 sum += sptr[kx] * kptr[kx];
-                            sptr += x_in;
-                            kptr += ksize;
+                            sptr += cnn->in_w;
+                            kptr += cnn->kernel_size;
                         }
                     }
                 }

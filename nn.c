@@ -318,25 +318,31 @@ static void forward_propagation(nn_t *nn)
     switch(nn->layer_type[i]) {
       case LAYER_TYPE_FC:
       case LAYER_TYPE_OUTPUT:
-        // Fully Connected Layer
-        for (j = 0; j < (int)nn->width[i]; j++) {
-          sum = 0.0f;
-          // Dot product: previous layer output * weight
-          for (k = 0; k < (int)nn->width[i - 1]; k++) {
-            if (nn->quantized)
-              sum += nn->neuron[i - 1][k] * nn->weight_quantized[i][j][k] * nn->weight_scale[i][j];
-            else
-              sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
+        // Fully Connected Layer. The quantized/float branch and the
+        // per-neuron weight_scale multiply are hoisted out of the innermost
+        // dot-product loop (checked/applied once per neuron rather than
+        // once per weight) so the accumulation loop is a plain, easily
+        // vectorized float multiply-add either way.
+        if (nn->quantized) {
+          for (j = 0; j < (int)nn->width[i]; j++) {
+            sum = 0.0f;
+            for (k = 0; k < (int)nn->width[i - 1]; k++) {
+              sum += nn->neuron[i - 1][k] * (float)nn->weight_quantized[i][j][k];
+            }
+            sum = sum * nn->weight_scale[i][j] + (float)nn->bias_quantized[i][j] * nn->bias_scale[i];
+            nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
+            nn->preact[i][j] = sum;
           }
-          // Add bias
-          if (nn->quantized)
-            sum += nn->bias_quantized[i][j] * nn->bias_scale[i];
-          else
+        } else {
+          for (j = 0; j < (int)nn->width[i]; j++) {
+            sum = 0.0f;
+            for (k = 0; k < (int)nn->width[i - 1]; k++) {
+              sum += nn->neuron[i - 1][k] * nn->weight[i][j][k];
+            }
             sum += nn->bias[i][j];
-          // Apply activation
-          nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
-          // Cache pre-activation for backprop
-          nn->preact[i][j] = sum;
+            nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
+            nn->preact[i][j] = sum;
+          }
         }
         break;
       case LAYER_TYPE_CNN:
@@ -1811,32 +1817,55 @@ void nn_conv2d(nn_t *nn, int layer)
         fprintf(stderr, "conv2d: inconsistent shape (in_c=%d, out_c=%d, plane_out=%d, width[%d]=%u)\n", in_c, out_c, plane_out, layer, nn->width[layer]);
         return;
     }
-    // Perform the convolution
-    for (int oc = 0; oc < out_c; ++oc) {
-        const float bias = nn->quantized ? ((float)nn->bias_quantized[layer][oc] * nn->bias_scale[layer]) : nn->bias[layer][oc];
-        float *dst = nn->neuron[layer] + oc * plane_out;
-        float *pre = nn->preact[layer] + oc * plane_out;
-        for (int oy = 0; oy < y_out; ++oy) {
-            const int in_y = oy * cnn->stride;
-            for (int ox = 0; ox < x_out; ++ox) {
-                const int in_x = ox * cnn->stride;
-                float sum = 0.0f;
-                for (int ic = 0; ic < in_c; ++ic) {
-                    const float *src = nn->neuron[layer - 1] + ic * cnn->in_h * cnn->in_w + in_y * cnn->in_w + in_x;
-                    if (nn->quantized) {
-                        const int8_t *krow = nn->weight_quantized[layer][oc * in_c + ic];
-                        const float   wsc  = nn->weight_scale[layer][oc * in_c + ic];
-                        const int8_t *kptr = krow;
-                        const float  *sptr = src;
+    // Perform the convolution. The quantized/float branch is hoisted out to
+    // once per layer call (instead of once per output-channel/pixel/input-
+    // channel), and in the quantized case the per-input-channel weight_scale
+    // multiply happens once after accumulating that channel's raw kernel_size^2
+    // int8*float products, instead of once per kernel tap.
+    if (nn->quantized) {
+        for (int oc = 0; oc < out_c; ++oc) {
+            const float bias = (float)nn->bias_quantized[layer][oc] * nn->bias_scale[layer];
+            float *dst = nn->neuron[layer] + oc * plane_out;
+            float *pre = nn->preact[layer] + oc * plane_out;
+            for (int oy = 0; oy < y_out; ++oy) {
+                const int in_y = oy * cnn->stride;
+                for (int ox = 0; ox < x_out; ++ox) {
+                    const int in_x = ox * cnn->stride;
+                    float sum = 0.0f;
+                    for (int ic = 0; ic < in_c; ++ic) {
+                        const float *src = nn->neuron[layer - 1] + ic * cnn->in_h * cnn->in_w + in_y * cnn->in_w + in_x;
+                        const int8_t *kptr = nn->weight_quantized[layer][oc * in_c + ic];
+                        const float wsc = nn->weight_scale[layer][oc * in_c + ic];
+                        const float *sptr = src;
+                        float raw = 0.0f;
                         for (int ky = 0; ky < cnn->kernel_size; ++ky) {
                             for (int kx = 0; kx < cnn->kernel_size; ++kx)
-                                sum += sptr[kx] * (float)kptr[kx] * wsc;
+                                raw += sptr[kx] * (float)kptr[kx];
                             sptr += cnn->in_w;
                             kptr += cnn->kernel_size;
                         }
-                    } else {
-                        const float *krow = nn->weight[layer][oc * in_c + ic];
-                        const float *kptr = krow;
+                        sum += raw * wsc;
+                    }
+                    const int oidx = oy * x_out + ox;
+                    sum += bias;
+                    pre[oidx] = sum;
+                    dst[oidx] = activation_function[nn->activation[layer]](sum, false);
+                }
+            }
+        }
+    } else {
+        for (int oc = 0; oc < out_c; ++oc) {
+            const float bias = nn->bias[layer][oc];
+            float *dst = nn->neuron[layer] + oc * plane_out;
+            float *pre = nn->preact[layer] + oc * plane_out;
+            for (int oy = 0; oy < y_out; ++oy) {
+                const int in_y = oy * cnn->stride;
+                for (int ox = 0; ox < x_out; ++ox) {
+                    const int in_x = ox * cnn->stride;
+                    float sum = 0.0f;
+                    for (int ic = 0; ic < in_c; ++ic) {
+                        const float *src = nn->neuron[layer - 1] + ic * cnn->in_h * cnn->in_w + in_y * cnn->in_w + in_x;
+                        const float *kptr = nn->weight[layer][oc * in_c + ic];
                         const float *sptr = src;
                         for (int ky = 0; ky < cnn->kernel_size; ++ky) {
                             for (int kx = 0; kx < cnn->kernel_size; ++kx)
@@ -1845,11 +1874,11 @@ void nn_conv2d(nn_t *nn, int layer)
                             kptr += cnn->kernel_size;
                         }
                     }
+                    const int oidx = oy * x_out + ox;
+                    sum += bias;
+                    pre[oidx] = sum;
+                    dst[oidx] = activation_function[nn->activation[layer]](sum, false);
                 }
-                const int oidx = oy * x_out + ox;
-                sum += bias;
-                pre[oidx] = sum;
-                dst[oidx] = activation_function[nn->activation[layer]](sum, false);
             }
         }
     }

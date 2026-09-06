@@ -15,7 +15,7 @@ int main(int argc, char *argv[]) {
   if (argc < 2) {
     printf("Usage: %s <model-file> <count>\n", argv[0]);
     printf("  <model-file> : Path to the neural-net model to prune (e.g., model.txt)\n");
-    printf("  <count> : How many neurons to remove.");
+    printf("  <count> : How many neurons to remove.\n");
     return 1;
   }
   const char *model_path = argv[1];

@@ -153,6 +153,27 @@ static float error_derivative(float a, float b)
   return a - b;
 }
 
+// Quantization/dequantization treat each layer as a set of "rows" that share
+// a single layer-wide bias scale: for a CNN layer a row is a kernel
+// (out_channels * in_channels of them, row_len = kernel_size^2 wide), with
+// bias_count = out_channels; for FC/OUTPUT layers a row is a neuron
+// (width[L] of them, row_len = width[L-1] wide), with bias_count =
+// width[L]. Pooling layers have no rows at all -- callers must check
+// nn->layer_type[L] != LAYER_TYPE_POOL themselves before using this.
+static void quantized_layer_shape(nn_t *nn, int L, int *rows, int *row_len, int *bias_count)
+{
+  if (nn->layer_type[L] == LAYER_TYPE_CNN) {
+    cnn_t *c = nn->config[L];
+    *rows = c->out_channels * c->in_channels;
+    *row_len = c->kernel_size * c->kernel_size;
+    *bias_count = c->out_channels;
+  } else {
+    *rows = (int)nn->width[L];
+    *row_len = (int)nn->width[L - 1];
+    *bias_count = (int)nn->width[L];
+  }
+}
+
 // 2D pooling layer forward pass over the previous layer's (float) feature
 // maps. Supports MIN/MAX ("winner take all", cached for backprop routing)
 // and AVG (uniform reduction) pooling. Pooling has no weights/bias and no
@@ -452,16 +473,17 @@ void nn_free(nn_t *nn)
   if (nn->quantized) {
     for (int layer = 1; layer < (int)nn->depth; layer++) {
       if (nn->layer_type[layer] == LAYER_TYPE_CNN) {
+        // CNN quantized data is stored one row per kernel (out_channels *
+        // in_channels), not one row per flattened output neuron.
         cnn_t *c = nn->config[layer];
         int kernels = c->out_channels * c->in_channels;
         for (int k = 0; k < kernels; ++k) {
-          free(nn->weight[layer][k]);
-          free(nn->weight_adj[layer][k]);
+          free(nn->weight_quantized[layer][k]);
         }
-        free(nn->weight[layer]);
-        free(nn->weight_adj[layer]);
+        free(nn->weight_quantized[layer]);
+        free(nn->weight_scale[layer]);
         // length = out_channels
-        free(nn->bias[layer]);
+        free(nn->bias_quantized[layer]);
       } else if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
         // Pooling layers have no weights/bias
       } else {
@@ -984,8 +1006,13 @@ nn_t *nn_load_model_ascii(const char *path)
   // Otherwise: quantized == true
   // Free all float-side allocations made by nn_add_layer (weight, weight_adj, bias)
   for (int layer = 1; layer < nn->depth; layer++) {
-    // Free per-neuron weight and weight_adj
-    for (int i = 0; i < (int)nn->width[layer]; i++) {
+    if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
+      // Pooling has no weight/weight_adj/bias (they're NULL already)
+      continue;
+    }
+    int rows, row_len, bias_count;
+    quantized_layer_shape(nn, layer, &rows, &row_len, &bias_count);
+    for (int i = 0; i < rows; i++) {
       free(nn->weight[layer][i]);
       free(nn->weight_adj[layer][i]);
     }
@@ -1002,6 +1029,8 @@ nn_t *nn_load_model_ascii(const char *path)
   nn->weight_adj = NULL;
   nn->bias = NULL;
   // weight_scale and bias_scale will be replaced by quantized arrays
+  for (int layer = 1; layer < nn->depth; layer++)
+    free(nn->weight_scale[layer]);
   free(nn->weight_scale);
   free(nn->bias_scale);
   nn->weight_scale = NULL;
@@ -1020,45 +1049,56 @@ nn_t *nn_load_model_ascii(const char *path)
   nn->bias_quantized[0] = NULL;
   nn->bias_scale[0] = 0.0f;
   // Read quantized data, layer by layer
-  int layer = 0, neuron = 0;
+  int layer = 0, row = 0;
   for (layer = 1; layer < nn->depth; layer++) {
-    int prev_w = nn->width[layer - 1];
-    int curr_w = nn->width[layer];
+    if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
+      // Pooling has no weights/bias to read
+      nn->weight_quantized[layer] = NULL;
+      nn->weight_scale[layer] = NULL;
+      nn->bias_quantized[layer] = NULL;
+      nn->bias_scale[layer] = 0.0f;
+      continue;
+    }
+    int rows, row_len, bias_count;
+    quantized_layer_shape(nn, layer, &rows, &row_len, &bias_count);
     // Allocate per-layer arrays
-    nn->weight_quantized[layer] = (int8_t **)malloc(sizeof(int8_t *) * curr_w);
-    nn->weight_scale[layer] = (float *)malloc(sizeof(float) * curr_w);
-    nn->bias_quantized[layer] = (int8_t *)malloc(sizeof(int8_t) * curr_w);
+    nn->weight_quantized[layer] = (int8_t **)malloc(sizeof(int8_t *) * rows);
+    nn->weight_scale[layer] = (float *)malloc(sizeof(float) * rows);
+    nn->bias_quantized[layer] = (int8_t *)malloc(sizeof(int8_t) * bias_count);
     if (!nn->weight_quantized[layer] || !nn->weight_scale[layer] || !nn->bias_quantized[layer]) {
       goto cleanup_quant_per_layer;
     }
-    // For each neuron, read weight_scale + quantized weights
-    for (neuron = 0; neuron < curr_w; neuron++) {
-      if (fscanf(file, "%f\n", &nn->weight_scale[layer][neuron]) != 1) {
+    // Zero so cleanup_quant_data can safely free every slot uniformly,
+    // whether or not this row's data was actually read yet.
+    memset(nn->weight_quantized[layer], 0, sizeof(int8_t *) * rows);
+    // For each row (neuron or kernel), read weight_scale + quantized weights
+    for (row = 0; row < rows; row++) {
+      if (fscanf(file, "%f\n", &nn->weight_scale[layer][row]) != 1) {
         goto cleanup_quant_data;
       }
-      nn->weight_quantized[layer][neuron] = (int8_t *)malloc(sizeof(int8_t) * prev_w);
-      if (!nn->weight_quantized[layer][neuron]) {
+      nn->weight_quantized[layer][row] = (int8_t *)malloc(sizeof(int8_t) * row_len);
+      if (!nn->weight_quantized[layer][row]) {
         goto cleanup_quant_data;
       }
-      for (int w = 0; w < prev_w; w++) {
+      for (int w = 0; w < row_len; w++) {
         int int_w;
         if (fscanf(file, "%d\n", &int_w) != 1) {
           goto cleanup_quant_data;
         }
-        nn->weight_quantized[layer][neuron][w] = (int8_t)int_w;
+        nn->weight_quantized[layer][row][w] = (int8_t)int_w;
       }
     }
     // Read bias_scale[layer]
     if (fscanf(file, "%f\n", &nn->bias_scale[layer]) != 1) {
       goto cleanup_quant_data;
     }
-    // Read each neuron's quantized bias
-    for (neuron = 0; neuron < curr_w; neuron++) {
+    // Read each bias (one per output channel for CNN, one per neuron for FC/OUTPUT)
+    for (int b = 0; b < bias_count; b++) {
       int int_b;
       if (fscanf(file, "%d\n", &int_b) != 1) {
         goto cleanup_quant_data;
       }
-      nn->bias_quantized[layer][neuron] = (int8_t)int_b;
+      nn->bias_quantized[layer][b] = (int8_t)int_b;
     }
   }
   fclose(file);
@@ -1080,8 +1120,11 @@ cleanup_quant_top:
 cleanup_quant_per_layer:
   // Free everything up to (layer−1):
   for (int L = 1; L < layer; L++) {
-    int cw = nn->width[L];
-    for (int n = 0; n < cw; n++) {
+    if (nn->layer_type[L] == LAYER_TYPE_POOL)
+      continue;
+    int L_rows, L_row_len, L_bias_count;
+    quantized_layer_shape(nn, L, &L_rows, &L_row_len, &L_bias_count);
+    for (int n = 0; n < L_rows; n++) {
       free(nn->weight_quantized[L][n]);
     }
     free(nn->weight_quantized[L]);
@@ -1097,10 +1140,15 @@ cleanup_quant_per_layer:
     free(nn->bias_quantized[layer]);
   goto cleanup_quant_top;
   // If we allocated some int8 rows for the current layer but then failed reading data:
-cleanup_quant_data:
-  // In layer L, some neurons [0..neuron] have allocated int8 arrays, free them:
-  for (int n = 0; n <= neuron; n++) {
+cleanup_quant_data: {
+  // weight_quantized[layer] was zeroed before the row loop started, so every
+  // slot is either a valid allocation or NULL (safe to free either way) --
+  // no need to track exactly how far the row loop got.
+  int d_rows, d_row_len, d_bias_count;
+  quantized_layer_shape(nn, layer, &d_rows, &d_row_len, &d_bias_count);
+  for (int n = 0; n < d_rows; n++) {
     free(nn->weight_quantized[layer][n]);
+  }
   }
   // Free that layer's pointer block and scales:
   free(nn->weight_quantized[layer]);
@@ -1108,8 +1156,11 @@ cleanup_quant_data:
   free(nn->bias_quantized[layer]);
   // Free earlier layers too:
   for (int L = 1; L < layer; L++) {
-    int cw = nn->width[L];
-    for (int n = 0; n < cw; n++) {
+    if (nn->layer_type[L] == LAYER_TYPE_POOL)
+      continue;
+    int L_rows, L_row_len, L_bias_count;
+    quantized_layer_shape(nn, L, &L_rows, &L_row_len, &L_bias_count);
+    for (int n = 0; n < L_rows; n++) {
       free(nn->weight_quantized[L][n]);
     }
     free(nn->weight_quantized[L]);
@@ -1219,7 +1270,13 @@ nn_t *nn_load_model_binary(const char *path)
   } else {
     // Quantized-mode: free float-side, allocate quantized arrays
     for (int L = 1; L < (int)depth; L++) {
-      for (int i = 0; i < (int)nn->width[L]; i++) {
+      if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+        // Pooling has no weight/weight_adj/bias (they're NULL already)
+        continue;
+      }
+      int rows, row_len, bias_count;
+      quantized_layer_shape(nn, L, &rows, &row_len, &bias_count);
+      for (int i = 0; i < rows; i++) {
         free(nn->weight[L][i]);
         free(nn->weight_adj[L][i]);
       }
@@ -1233,6 +1290,8 @@ nn_t *nn_load_model_binary(const char *path)
     nn->weight_adj = NULL;
     free(nn->bias);
     nn->bias = NULL;
+    for (int L = 1; L < (int)depth; L++)
+      free(nn->weight_scale[L]);
     free(nn->weight_scale);
     nn->weight_scale = NULL;
     free(nn->bias_scale);
@@ -1252,30 +1311,42 @@ nn_t *nn_load_model_binary(const char *path)
     nn->bias_scale[0] = 0.0f;
     // Read per-layer quant data
     for (int L = 1; L < (int)depth; L++) {
-      uint32_t curr = nn->width[L], prev = nn->width[L - 1];
+      if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+        // Pooling has no weights/bias to read
+        nn->weight_quantized[L] = NULL;
+        nn->weight_scale[L] = NULL;
+        nn->bias_quantized[L] = NULL;
+        nn->bias_scale[L] = 0.0f;
+        continue;
+      }
+      int rows, row_len, bias_count;
+      quantized_layer_shape(nn, L, &rows, &row_len, &bias_count);
       // Allocate per-layer
-      nn->weight_quantized[L] = malloc(curr * sizeof(int8_t *));
-      nn->weight_scale[L] = malloc(curr * sizeof(float));
-      nn->bias_quantized[L] = malloc(curr * sizeof(int8_t));
+      nn->weight_quantized[L] = malloc(rows * sizeof(int8_t *));
+      nn->weight_scale[L] = malloc(rows * sizeof(float));
+      nn->bias_quantized[L] = malloc(bias_count * sizeof(int8_t));
       if (!nn->weight_quantized[L] || !nn->weight_scale[L] ||
           !nn->bias_quantized[L])
         goto cleanup;
-      // Read each neuron's weight_scale and weights
-      for (uint32_t i = 0; i < curr; i++) {
+      // Zero so a later nn_free() (via `goto cleanup` on a truncated file)
+      // can safely free every slot, whether or not it was read yet.
+      memset(nn->weight_quantized[L], 0, rows * sizeof(int8_t *));
+      // Read each row's (neuron or kernel) weight_scale and weights
+      for (int i = 0; i < rows; i++) {
         if (fread(&nn->weight_scale[L][i], sizeof(float), 1, file) != 1)
           goto cleanup;
-        nn->weight_quantized[L][i] = malloc(prev * sizeof(int8_t));
+        nn->weight_quantized[L][i] = malloc(row_len * sizeof(int8_t));
         if (!nn->weight_quantized[L][i])
           goto cleanup;
-        if (fread(nn->weight_quantized[L][i], sizeof(int8_t), prev, file) !=
-            prev)
+        if (fread(nn->weight_quantized[L][i], sizeof(int8_t), row_len, file) !=
+            (size_t)row_len)
           goto cleanup;
       }
       // Read bias_scale[L]
       if (fread(&nn->bias_scale[L], sizeof(float), 1, file) != 1)
         goto cleanup;
-      // Read quantized biases
-      if (fread(nn->bias_quantized[L], sizeof(int8_t), curr, file) != curr)
+      // Read quantized biases (one per output channel for CNN, one per neuron for FC/OUTPUT)
+      if (fread(nn->bias_quantized[L], sizeof(int8_t), bias_count, file) != (size_t)bias_count)
         goto cleanup;
     }
   }
@@ -1354,17 +1425,21 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
   } else {
     // Quantized mode: write weight_scale, quantized weights, bias_scale, quantized bias
     for (int layer = 1; layer < (int)nn->depth; layer++) {
-      int prev_w = nn->width[layer - 1];
-      int curr_w = nn->width[layer];
-      for (int neuron = 0; neuron < curr_w; neuron++) {
-        fprintf(file, "%f\n", nn->weight_scale[layer][neuron]);
-        for (int w = 0; w < prev_w; w++) {
-          fprintf(file, "%d\n", (int)nn->weight_quantized[layer][neuron][w]);
+      if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
+        // Pooling has no weights/bias to write
+        continue;
+      }
+      int rows, row_len, bias_count;
+      quantized_layer_shape(nn, layer, &rows, &row_len, &bias_count);
+      for (int row = 0; row < rows; row++) {
+        fprintf(file, "%f\n", nn->weight_scale[layer][row]);
+        for (int w = 0; w < row_len; w++) {
+          fprintf(file, "%d\n", (int)nn->weight_quantized[layer][row][w]);
         }
       }
       fprintf(file, "%f\n", nn->bias_scale[layer]);
-      for (int neuron = 0; neuron < curr_w; neuron++) {
-        fprintf(file, "%d\n", (int)nn->bias_quantized[layer][neuron]);
+      for (int b = 0; b < bias_count; b++) {
+        fprintf(file, "%d\n", (int)nn->bias_quantized[layer][b]);
       }
     }
   }
@@ -1437,17 +1512,22 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
   } else {
     // Quantized mode: real scales and int8 quantized data
     for (uint32_t L = 1; L < depth; L++) {
-      uint32_t curr = nn->width[L], prev = nn->width[L - 1];
-      for (uint32_t i = 0; i < curr; i++) {
-        // Per-neuron weight scale
+      if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+        // Pooling has no weights/bias to write
+        continue;
+      }
+      int rows, row_len, bias_count;
+      quantized_layer_shape(nn, L, &rows, &row_len, &bias_count);
+      for (int i = 0; i < rows; i++) {
+        // Per-row (neuron or kernel) weight scale
         fwrite(&nn->weight_scale[L][i], sizeof(float), 1, file);
         // Quantized weights
-        fwrite(nn->weight_quantized[L][i], sizeof(int8_t), prev, file);
+        fwrite(nn->weight_quantized[L][i], sizeof(int8_t), row_len, file);
       }
       // Bias scale (one per layer)
       fwrite(&nn->bias_scale[L], sizeof(float), 1, file);
-      // Quantized biases
-      fwrite(nn->bias_quantized[L], sizeof(int8_t), curr, file);
+      // Quantized biases (one per output channel for CNN, one per neuron for FC/OUTPUT)
+      fwrite(nn->bias_quantized[L], sizeof(int8_t), bias_count, file);
     }
   }
   fclose(file);
@@ -1458,6 +1538,19 @@ nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
 {
   if (nn == NULL || layer <= 0 || layer >= (int)nn->depth || neuron_index < 0 || neuron_index >= (int)nn->width[layer]) {
     return NN_ERROR_INVALID_ARGUMENT;
+  }
+  // A CNN/POOL layer's width is derived entirely from its cnn_t/pool_t
+  // config (spatial dims x channels), not a flat list of independent
+  // neurons, and its weight array (if any) isn't neuron-indexed -- there is
+  // no well-defined way to "remove one neuron" from it without corrupting
+  // the layer's structural computation. Likewise, if the NEXT layer is
+  // CNN/POOL, its weight array has no per-input-neuron column to shrink.
+  if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL) {
+    return NN_ERROR_UNSUPPORTED_LAYER;
+  }
+  if (layer + 1 < (int)nn->depth &&
+      (nn->layer_type[layer + 1] == LAYER_TYPE_CNN || nn->layer_type[layer + 1] == LAYER_TYPE_POOL)) {
+    return NN_ERROR_UNSUPPORTED_LAYER;
   }
   int old_width = nn->width[layer];
   // Shift out neuron / preact / loss in this layer
@@ -1542,6 +1635,12 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
       neuron_index >= (int)nn->width[layer]) {
     return 0.0f;
   }
+  // CNN/POOL layers aren't neuron-indexed the way this function assumes
+  // (see nn_remove_neuron() for why); there's no meaningful "neuron weight"
+  // to report for one.
+  if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL) {
+    return 0.0f;
+  }
   float total = 0.0f;
   // Sum absolute values of input weights (previous layer to this neuron)
   for (int i = 0; i < (int)nn->width[layer - 1]; i++) {
@@ -1553,8 +1652,10 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
       total += fabsf(nn->weight[layer][neuron_index][i]);
     }
   }
-  // Sum absolute values of output weights (this neuron to next layer)
-  if (layer + 1 < (int)nn->depth) {
+  // Sum absolute values of output weights (this neuron to next layer), only
+  // when the next layer's weight array is itself neuron-indexed (FC/OUTPUT).
+  if (layer + 1 < (int)nn->depth &&
+      nn->layer_type[layer + 1] != LAYER_TYPE_CNN && nn->layer_type[layer + 1] != LAYER_TYPE_POOL) {
     for (int i = 0; i < (int)nn->width[layer + 1]; i++) {
       if (nn->quantized) {
         // For quantized models, we use the quantized weights
@@ -1577,8 +1678,13 @@ bool nn_prune_lightest_neuron(nn_t *nn)
   int lightest_layer = -1;
   int lightest_index = -1;
   float min_weight = FLT_MAX;
-  // Search all hidden layers (1..depth-2)
+  // Search all hidden layers (1..depth-2), skipping CNN/POOL layers -- their
+  // width isn't a flat list of independent neurons, so they can't be pruned
+  // this way (see nn_remove_neuron()).
   for (int layer = 1; layer < (int)nn->depth - 1; layer++) {
+    if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL) {
+      continue;
+    }
     for (int neuron = 0; neuron < (int)nn->width[layer]; neuron++) {
       float tot = nn_get_total_neuron_weight(nn, layer, neuron);
       if (tot < min_weight) {
@@ -1716,6 +1822,13 @@ nn_error_t nn_quantize(nn_t *nn)
     return NN_ERROR_INVALID_ARGUMENT;
   }
   const int depth = (int)nn->depth;
+  // Free the float-mode weight_scale/bias_scale placeholders (allocated by
+  // nn_add_layer) before replacing them with the real quantized-mode arrays
+  // below -- otherwise they leak.
+  for (int L = 1; L < depth; L++)
+    free(nn->weight_scale[L]);
+  free(nn->weight_scale);
+  free(nn->bias_scale);
   // Mark the network as quantized
   nn->quantized = true;
   // Allocate quantization arrays in the union fields
@@ -1733,18 +1846,26 @@ nn_error_t nn_quantize(nn_t *nn)
   nn->bias_scale[0] = 0.0f;
   // Quantize each layer > 1
   for (int L = 1; L < depth; L++) {
-    int prev_w = nn->width[L - 1];
-    int curr_w = nn->width[L];
+    if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+      // Pooling has no weights/bias to quantize
+      nn->weight_quantized[L] = NULL;
+      nn->weight_scale[L] = NULL;
+      nn->bias_quantized[L] = NULL;
+      nn->bias_scale[L] = 0.0f;
+      continue;
+    }
+    int rows, row_len, bias_count;
+    quantized_layer_shape(nn, L, &rows, &row_len, &bias_count);
     // Allocate per-layer arrays
-    nn->weight_quantized[L] = malloc(curr_w * sizeof(int8_t *));
-    nn->weight_scale[L] = malloc(curr_w * sizeof(float));
-    nn->bias_quantized[L] = malloc(curr_w * sizeof(int8_t));
+    nn->weight_quantized[L] = malloc(rows * sizeof(int8_t *));
+    nn->weight_scale[L] = malloc(rows * sizeof(float));
+    nn->bias_quantized[L] = malloc(bias_count * sizeof(int8_t));
     if (!nn->weight_quantized[L] || !nn->weight_scale[L] || !nn->bias_quantized[L]) {
       return NN_ERROR_OUT_OF_MEMORY;
     }
     // Compute one bias_scale for this layer
     float min_b = nn->bias[L][0], max_b = min_b;
-    for (int i = 1; i < curr_w; i++) {
+    for (int i = 1; i < bias_count; i++) {
       float v = nn->bias[L][i];
       if (v < min_b)
         min_b = v;
@@ -1755,32 +1876,34 @@ nn_error_t nn_quantize(nn_t *nn)
     if (layer_bias_scale == 0.0f)
       layer_bias_scale = 1e-8f;
     nn->bias_scale[L] = layer_bias_scale;
-    // For each neuron in this layer:
-    for (int n = 0; n < curr_w; n++) {
+    // For each row (neuron or kernel) in this layer:
+    for (int n = 0; n < rows; n++) {
       // Allocate the int8 weight-vector
-      nn->weight_quantized[L][n] = malloc(prev_w * sizeof(int8_t));
+      nn->weight_quantized[L][n] = malloc(row_len * sizeof(int8_t));
       if (!nn->weight_quantized[L][n])
         return NN_ERROR_OUT_OF_MEMORY;
-      // Compute per-neuron weight scale
+      // Compute per-row weight scale
       float min_w = nn->weight[L][n][0], max_w = min_w;
-      for (int k = 1; k < prev_w; k++) {
+      for (int k = 1; k < row_len; k++) {
         float w = nn->weight[L][n][k];
         if (w < min_w)
           min_w = w;
         if (w > max_w)
           max_w = w;
       }
-      float neuron_scale = fmaxf(fabsf(min_w), fabsf(max_w)) / 127.0f;
-      if (neuron_scale == 0.0f)
-        neuron_scale = 1e-8f;
-      nn->weight_scale[L][n] = neuron_scale;
+      float row_scale = fmaxf(fabsf(min_w), fabsf(max_w)) / 127.0f;
+      if (row_scale == 0.0f)
+        row_scale = 1e-8f;
+      nn->weight_scale[L][n] = row_scale;
       // Quantize each weight
-      for (int k = 0; k < prev_w; k++) {
+      for (int k = 0; k < row_len; k++) {
         float orig = nn->weight[L][n][k];
-        int8_t q = (int8_t)lroundf(orig / neuron_scale);
+        int8_t q = (int8_t)lroundf(orig / row_scale);
         nn->weight_quantized[L][n][k] = (q > 127 ? 127 : (q < -128 ? -128 : q));
       }
-      // Quantize the bias
+    }
+    // Quantize the biases (bias_count of them, using the shared layer scale)
+    for (int n = 0; n < bias_count; n++) {
       float borig = nn->bias[L][n];
       int8_t bq = (int8_t)lroundf(borig / layer_bias_scale);
       nn->bias_quantized[L][n] = (bq > 127 ? 127 : (bq < -128 ? -128 : bq));
@@ -1788,8 +1911,13 @@ nn_error_t nn_quantize(nn_t *nn)
   }
   // Free all of the original float-side storage AFTER quantization
   for (int L = 1; L < depth; L++) {
-    int wcount = (int)nn->width[L];
-    for (int n = 0; n < wcount; n++) {
+    if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+      // weight/weight_adj/bias were never allocated for pooling layers
+      continue;
+    }
+    int rows, row_len, bias_count;
+    quantized_layer_shape(nn, L, &rows, &row_len, &bias_count);
+    for (int n = 0; n < rows; n++) {
       free(nn->weight[L][n]);
       free(nn->weight_adj[L][n]);
     }
@@ -1800,6 +1928,9 @@ nn_error_t nn_quantize(nn_t *nn)
   free(nn->weight);
   free(nn->weight_adj);
   free(nn->bias);
+  nn->weight = NULL;
+  nn->weight_adj = NULL;
+  nn->bias = NULL;
   return NN_ERROR_NONE;
 }
 
@@ -1818,36 +1949,48 @@ nn_error_t nn_dequantize(nn_t *nn)
   if (!nn->weight || !nn->weight_adj || !nn->bias) {
     return NN_ERROR_OUT_OF_MEMORY;
   }
+  nn->weight[0] = NULL;
+  nn->weight_adj[0] = NULL;
+  nn->bias[0] = NULL;
   // For each layer >=1, rebuild float weight, weight_adj, bias
   for (int L = 1; L < depth; L++) {
-    int curr = (int)nn->width[L];
-    int prev = (int)nn->width[L - 1];
+    if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+      // Pooling has no weights/bias; nothing was quantized for it either.
+      nn->weight[L] = NULL;
+      nn->weight_adj[L] = NULL;
+      nn->bias[L] = NULL;
+      continue;
+    }
+    int rows, row_len, bias_count;
+    quantized_layer_shape(nn, L, &rows, &row_len, &bias_count);
     // Allocate per-layer pointer arrays
-    nn->weight[L] = malloc(curr * sizeof(*nn->weight[L]));
-    nn->weight_adj[L] = malloc(curr * sizeof(*nn->weight_adj[L]));
-    nn->bias[L] = malloc(curr * sizeof(*nn->bias[L]));
+    nn->weight[L] = malloc(rows * sizeof(*nn->weight[L]));
+    nn->weight_adj[L] = malloc(rows * sizeof(*nn->weight_adj[L]));
+    nn->bias[L] = malloc(bias_count * sizeof(*nn->bias[L]));
     if (!nn->weight[L] || !nn->weight_adj[L] || !nn->bias[L]) {
       return NN_ERROR_OUT_OF_MEMORY;
     }
-    // For each neuron, allocate its float row, fill from quantized
-    for (int i = 0; i < curr; i++) {
+    // For each row (neuron or kernel), allocate its float row, fill from quantized
+    for (int i = 0; i < rows; i++) {
       // Allocate float-weight row and float-weight_adj row
-      nn->weight[L][i] = malloc(prev * sizeof(*nn->weight[L][i]));
-      nn->weight_adj[L][i] = malloc(prev * sizeof(*nn->weight_adj[L][i]));
+      nn->weight[L][i] = malloc(row_len * sizeof(*nn->weight[L][i]));
+      nn->weight_adj[L][i] = malloc(row_len * sizeof(*nn->weight_adj[L][i]));
       if (!nn->weight[L][i] || !nn->weight_adj[L][i]) {
         return NN_ERROR_OUT_OF_MEMORY;
       }
       // Dequantize each weight
       float wscale = nn->weight_scale[L][i];
-      for (int j = 0; j < prev; j++) {
+      for (int j = 0; j < row_len; j++) {
         nn->weight[L][i][j] = nn->weight_quantized[L][i][j] * wscale;
         // weight_adj was never meaningful in quantized mode, zero it
         nn->weight_adj[L][i][j] = 0.0f;
       }
-      // Dequantize bias
-      nn->bias[L][i] = nn->bias_quantized[L][i] * nn->bias_scale[L];
       // Free the now-unused row of quantized weights
       free(nn->weight_quantized[L][i]);
+    }
+    // Dequantize the biases (bias_count of them, using the shared layer scale)
+    for (int i = 0; i < bias_count; i++) {
+      nn->bias[L][i] = nn->bias_quantized[L][i] * nn->bias_scale[L];
     }
     // Free per-layer quant arrays
     free(nn->weight_quantized[L]);
@@ -1859,6 +2002,35 @@ nn_error_t nn_dequantize(nn_t *nn)
   free(nn->weight_scale);
   free(nn->bias_quantized);
   free(nn->bias_scale);
+  nn->weight_quantized = NULL;
+  nn->bias_quantized = NULL;
+  // Reallocate fresh float-mode weight_scale/bias_scale placeholders,
+  // matching what nn_add_layer sets up when a layer is first constructed --
+  // without this, nn->weight_scale/bias_scale would be left dangling
+  // (freed above, never reassigned), which nn_free() would later try to
+  // read/free again.
+  nn->weight_scale = malloc(depth * sizeof(*nn->weight_scale));
+  nn->bias_scale = malloc(depth * sizeof(*nn->bias_scale));
+  if (!nn->weight_scale || !nn->bias_scale) {
+    return NN_ERROR_OUT_OF_MEMORY;
+  }
+  nn->weight_scale[0] = NULL;
+  nn->bias_scale[0] = 0.0f;
+  for (int L = 1; L < depth; L++) {
+    nn->bias_scale[L] = 0.0f;
+    if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+      nn->weight_scale[L] = NULL;
+      continue;
+    }
+    int rows, row_len, bias_count;
+    quantized_layer_shape(nn, L, &rows, &row_len, &bias_count);
+    nn->weight_scale[L] = malloc(rows * sizeof(*nn->weight_scale[L]));
+    if (!nn->weight_scale[L]) {
+      return NN_ERROR_OUT_OF_MEMORY;
+    }
+    for (int i = 0; i < rows; i++)
+      nn->weight_scale[L][i] = 0.0f;
+  }
   // Mark as float mode
   nn->quantized = false;
   return NN_ERROR_NONE;

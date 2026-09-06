@@ -1,6 +1,6 @@
 Neural Network library for embedded systems
 
-Copyright (c) 2019-2025 SynthInt Technologies, LLC
+Copyright (c) 2019-2026 SynthInt Technologies, LLC
 
 https://synthint.ai
 

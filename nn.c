@@ -511,6 +511,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 {
   float sum;
   int i, j, k;
+  float err;
 
   if (nn->quantized) {
     // Cannot train a quantized network, so convert to a floating point model first.
@@ -518,13 +519,23 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   }
   nn->neuron[0] = inputs;
   forward_propagation(nn);
+  // Capture this sample's pre-update error now, while neuron[] still reflects
+  // the forward pass above. This is the conventional "training loss" and lets
+  // us avoid a second, redundant forward_propagation() call at the end of
+  // this function (nn->neuron[] is not touched again until the next forward
+  // pass, so this is equivalent to what a trailing nn_error() call would have
+  // computed from the pre-update weights).
+  i = (int)nn->depth - 1;
+  err = 0.0f;
+  for (j = 0; j < (int)nn->width[i]; j++) {
+    err += error(targets[j], nn->neuron[i][j]);
+  }
   // Perform back propagation using gradient descent, which is an optimization
   // algorithm that follows the negative gradient of the objective function to
   // find the minimum of the function. Start at the output layer, and work
   // backward toward the input layer, adjusting weights along the way. Calculate
   // the error aka loss aka delta at the output.
   // Compute output layer loss
-  i = (int)nn->depth - 1;
   for (j = 0; j < (int)nn->width[i]; j++) {
     nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]);
   }
@@ -621,8 +632,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
           nn->weight[i][j][k] += nn->weight_adj[i][j][k] * rate;
     }
   }
-  // Return the post-update error
-  return nn_error(nn, inputs, targets);
+  // Return the pre-update error computed above
+  return err;
 }
 
 // Returns an output prediction given an input.

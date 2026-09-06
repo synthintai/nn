@@ -54,7 +54,9 @@ static float activation_function_elu(float a, bool derivative)
 {
   if (a >= 0)
     return (derivative ? 1 : a);
-  return (derivative ? activation_function_elu(a, false) : expf(a) - 1);
+  // For a < 0, elu(a) = expf(a) - 1, so elu'(a) = expf(a) (not elu(a) itself,
+  // i.e. not expf(a) - 1).
+  return (derivative ? expf(a) : expf(a) - 1);
 }
 
 // Threshold activation function

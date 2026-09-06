@@ -529,6 +529,26 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
   pool_t *pool = NULL;
   int out_w = 0, out_h = 0; // CNN/POOL output spatial dims, computed once below
 
+  // Validate the CNN config before mutating `nn` at all, so a rejected call
+  // leaves the network completely unchanged (in particular, still safe to
+  // keep using or to nn_free()).
+  if (layer_type == LAYER_TYPE_CNN) {
+    if (config == NULL) {
+      return NN_ERROR_INVALID_CONFIG;
+    }
+    cnn_t *cnn_check = (cnn_t *)config;
+    // padding and dilation are accepted and round-tripped through save/load,
+    // but neither the output-size formula below nor nn_conv2d()'s actual
+    // convolution loop implements them -- silently accepting a non-default
+    // value would produce a different (and wrong, from the caller's
+    // expectation) result instead of what was asked for. Reject rather than
+    // silently ignore, until they're genuinely implemented.
+    if (cnn_check->padding != 0 || cnn_check->dilation != 1) {
+      fprintf(stderr, "nn_add_layer: CNN padding/dilation are not implemented (got padding=%u, dilation=%u; only padding=0, dilation=1 are supported)\n", cnn_check->padding, cnn_check->dilation);
+      return NN_ERROR_INVALID_CONFIG;
+    }
+  }
+
   // Increase depth by one
   nn->depth++;
   nn->layer_type = (uint8_t *)realloc(nn->layer_type, nn->depth * sizeof(*nn->layer_type));
@@ -541,9 +561,8 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
     return NN_ERROR_OUT_OF_MEMORY;
   nn->width[nn->depth - 1] = (uint32_t)width;
   if (layer_type == LAYER_TYPE_CNN) {
-    if (config == NULL) {
-      return NN_ERROR_INVALID_CONFIG;
-    }
+    // config's validity (non-NULL, padding=0, dilation=1) was already
+    // checked above before any of the mutation up to this point.
     cnn = (cnn_t *)config;
     out_w = ((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1;
     out_h = ((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1;

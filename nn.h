@@ -123,10 +123,18 @@ typedef struct {
   float **neuron;         // Output value for each neuron in each layer
   float **loss;           // Error derivative for each neuron in each layer
   float **preact;         // Neuron values before activation function is applied for each neuron in each layer
-  float **weight_scale;   // Scale for each weight in each layer
-  float ***weight;        // Weight for each neuron in each layer
-  int8_t ***weight_quantized; // Quantized weight for each neuron in each layer
-  float ***weight_adj;    // Adjustment of each weight for each neuron in each layer
+  float **weight_scale;   // Scale for each weight-row (neuron or CNN kernel) in each layer
+  // weight/weight_quantized/weight_adj: one contiguous, row-major buffer per
+  // layer (weight[layer][row * row_len + col]), not an array of separately
+  // allocated rows -- better cache locality/vectorization than a jagged
+  // array, and far fewer allocations. "row"/"row_len" mean neuron/prev-width
+  // for FC & OUTPUT layers, or kernel-index/kernel_size^2 for CNN layers
+  // (see the private quantized_layer_shape() helper in nn.c, which every
+  // internal user of these fields calls to get the right row/row_len/count
+  // for a given layer).
+  float **weight;             // Weight for each neuron/kernel in each layer
+  int8_t **weight_quantized;  // Quantized weight for each neuron/kernel in each layer
+  float **weight_adj;         // Adjustment of each weight for each neuron/kernel in each layer
   float *bias_scale;      // Scale for each bias in each layer
   float **bias;           // Bias for each neuron
   int8_t **bias_quantized;// Quantized bias for each neuron

@@ -599,13 +599,16 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       nn->bias[nn->depth - 1] = malloc(cnn->out_channels * sizeof(float));
       if (!nn->weight[nn->depth - 1] || !nn->weight_adj[nn->depth - 1] || !nn->weight_scale[nn->depth - 1] || !nn->bias[nn->depth - 1])
         return NN_ERROR_OUT_OF_MEMORY;
+      // Xavier (Glorot) initialisation: fan_in/fan_out count every connection
+      // a kernel weight participates in, i.e. across all input/output
+      // channels, not just its own k_elems -- matching the FC layer's use of
+      // full layer widths below.
+      float range = sqrtf(6.0f / (float)(cnn->in_channels * k_elems + cnn->out_channels * k_elems));
       for (int k = 0; k < kernels; ++k) {
         nn->weight[nn->depth - 1][k] = malloc(k_elems * sizeof(float));
         nn->weight_adj[nn->depth - 1][k] = malloc(k_elems * sizeof(float));
         if (!nn->weight[nn->depth - 1][k] || !nn->weight_adj[nn->depth - 1][k])
           return NN_ERROR_OUT_OF_MEMORY;
-        // Xavier initialisation over kernel elements
-        float range = sqrtf(6.0f / (k_elems + k_elems));
         for (int i = 0; i < k_elems; ++i) {
           nn->weight[nn->depth - 1][k][i] = range * 2.0f * ((rand() / (float)RAND_MAX) - 0.5f);
           nn->weight_adj [nn->depth - 1][k][i] = 0.0f;

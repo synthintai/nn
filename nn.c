@@ -188,8 +188,8 @@ void nn_pool_forward(nn_t *nn, int layer)
   const int channels = pool->channels;
   const int psize = pool->pool_size;
   const int stride = pool->stride;
-  const int x_out = ((pool->in_w - psize) / stride) + 1;
-  const int y_out = ((pool->in_h - psize) / stride) + 1;
+  const int x_out = pool->out_w;
+  const int y_out = pool->out_h;
   const int plane_out = x_out * y_out;
   const int plane_in = pool->in_w * pool->in_h;
   // Sanity-check shapes
@@ -273,8 +273,8 @@ static void nn_pool_backward(nn_t *nn, int layer, float *grad_in)
   const int channels = pool->channels;
   const int psize = pool->pool_size;
   const int stride = pool->stride;
-  const int x_out = ((pool->in_w - psize) / stride) + 1;
-  const int y_out = ((pool->in_h - psize) / stride) + 1;
+  const int x_out = pool->out_w;
+  const int y_out = pool->out_h;
   const int plane_out = x_out * y_out;
   const int plane_in = pool->in_w * pool->in_h;
   const float *loss = nn->loss[layer];
@@ -527,6 +527,7 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
 {
   cnn_t *cnn = NULL;
   pool_t *pool = NULL;
+  int out_w = 0, out_h = 0; // CNN/POOL output spatial dims, computed once below
 
   // Increase depth by one
   nn->depth++;
@@ -544,13 +545,17 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       return NN_ERROR_INVALID_CONFIG;
     }
     cnn = (cnn_t *)config;
-    nn->width[nn->depth - 1] = cnn->out_channels * (((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1) * (((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1);
+    out_w = ((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1;
+    out_h = ((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1;
+    nn->width[nn->depth - 1] = cnn->out_channels * out_w * out_h;
   } else if (layer_type == LAYER_TYPE_POOL) {
     if (config == NULL) {
       return NN_ERROR_INVALID_CONFIG;
     }
     pool = (pool_t *)config;
-    nn->width[nn->depth - 1] = pool->channels * (((pool->in_w - pool->pool_size) / pool->stride) + 1) * (((pool->in_h - pool->pool_size) / pool->stride) + 1);
+    out_w = ((pool->in_w - pool->pool_size) / pool->stride) + 1;
+    out_h = ((pool->in_h - pool->pool_size) / pool->stride) + 1;
+    nn->width[nn->depth - 1] = pool->channels * out_w * out_h;
   }
   nn->activation = (uint8_t *)realloc(nn->activation, nn->depth * sizeof(*nn->activation));
   if (nn->activation == NULL)
@@ -566,12 +571,19 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       return NN_ERROR_OUT_OF_MEMORY;
     // Copy the CNN configuration
     memcpy(nn->config[nn->depth - 1], config, sizeof(cnn_t));
+    // Cache the output dims so nn_conv2d() and nn_train() never need to
+    // re-derive them via division on every sample/epoch.
+    ((cnn_t *)nn->config[nn->depth - 1])->out_w = (uint16_t)out_w;
+    ((cnn_t *)nn->config[nn->depth - 1])->out_h = (uint16_t)out_h;
   } else if (layer_type == LAYER_TYPE_POOL) {
     nn->config[nn->depth - 1] = (void *)malloc(sizeof(pool_t));
     if (nn->config[nn->depth - 1] == NULL)
       return NN_ERROR_OUT_OF_MEMORY;
     // Copy the pooling configuration
     memcpy(nn->config[nn->depth - 1], config, sizeof(pool_t));
+    // Cache the output dims for the same reason as the CNN case above.
+    ((pool_t *)nn->config[nn->depth - 1])->out_w = (uint16_t)out_w;
+    ((pool_t *)nn->config[nn->depth - 1])->out_h = (uint16_t)out_h;
   }
   nn->neuron = (float **)realloc(nn->neuron, nn->depth * sizeof(float *));
   if (nn->neuron == NULL)
@@ -784,8 +796,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
     if (nn->layer_type[i] == LAYER_TYPE_CNN) {
       cnn_t *cnn = nn->config[i];
       int out_c  = cnn->out_channels;
-      int x_out  = ((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1;
-      int y_out  = ((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1;
+      int x_out  = cnn->out_w;
+      int y_out  = cnn->out_h;
       int plane  = x_out * y_out;
       for (j = 0; j < out_c; ++j) {
         float db = 0.0f;
@@ -814,8 +826,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       int in_c   = cnn->in_channels;
       int out_c  = cnn->out_channels;
       int ksize  = cnn->kernel_size;
-      int x_out  = ((cnn->in_w - ksize) / cnn->stride) + 1;
-      int y_out  = ((cnn->in_h - ksize) / cnn->stride) + 1;
+      int x_out  = cnn->out_w;
+      int y_out  = cnn->out_h;
       int plane_out = x_out * y_out;
       int in_plane  = cnn->in_w * cnn->in_h;
       for (int oc = 0; oc < out_c; ++oc) {
@@ -1770,8 +1782,8 @@ void nn_conv2d(nn_t *nn, int layer)
     // Derive channel counts from previous bookkeeping
     cnn_t *cnn = nn->config[layer];
     const int in_c = cnn->in_channels;
-    int x_out = ((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1;
-    int y_out = ((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1;
+    const int x_out = cnn->out_w;
+    const int y_out = cnn->out_h;
     const int plane_out = y_out * x_out;
     const int out_c = cnn->out_channels;
     // Sanity‑check shapes

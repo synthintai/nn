@@ -94,6 +94,8 @@ typedef struct {
   uint8_t dilation;      // Dilation (same for both dimensions)
   nn_init_t weight_init; // How to initialize weights
   nn_init_t bias_init;   // How to initialize biases
+  uint16_t out_h;        // Cached output height, computed once by nn_add_layer -- do not set this yourself
+  uint16_t out_w;        // Cached output width, computed once by nn_add_layer -- do not set this yourself
 } cnn_t;
 
 typedef struct {
@@ -103,6 +105,8 @@ typedef struct {
   uint8_t pool_size;     // Pooling window width and height (square)
   uint8_t stride;        // Stride
   pooling_type_t pooling_type; // POOLING_TYPE_MIN, POOLING_TYPE_MAX, or POOLING_TYPE_AVG
+  uint16_t out_h;        // Cached output height, computed once by nn_add_layer -- do not set this yourself
+  uint16_t out_w;        // Cached output width, computed once by nn_add_layer -- do not set this yourself
 } pool_t;
 
 typedef struct {

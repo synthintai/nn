@@ -133,13 +133,17 @@ void data_free(data_t *data)
   free(data);
 }
 
-// Randomly shuffles the rows of a data object
+// Randomly shuffles the rows of a data object using the Fisher-Yates
+// algorithm, which produces a uniformly random permutation. Each index i is
+// only ever swapped with an index in [0, i] (its own unshuffled prefix),
+// unlike picking j from the full range every time, which is a common but
+// biased ("naive shuffle") mistake.
 void data_shuffle(data_t *data)
 {
   float *input, *output;
 
-  for (int i = 0; i < data->num_rows; i++) {
-    int j = rand() % data->num_rows;
+  for (int i = data->num_rows - 1; i > 0; i--) {
+    int j = rand() % (i + 1);
     // Swap target
     output = data->target[i];
     data->target[i] = data->target[j];

@@ -14,7 +14,7 @@
 // NN API Version
 #define NN_VERSION_MAJOR 0
 #define NN_VERSION_MINOR 1
-#define NN_VERSION_PATCH 6
+#define NN_VERSION_PATCH 7
 #define NN_VERSION_BUILD 0
 
 typedef enum {

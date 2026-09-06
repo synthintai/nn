@@ -25,7 +25,7 @@ int main(int argc, char *argv[]) {
   // Tunable hyperparameters
   int num_inputs = 28 * 28;
   int num_outputs = 10;
-  float learning_rate = 0.02f;
+  float learning_rate = 0.025f;
   float annealing = 1.0f;
   // End of tunable parameters
   data_t *train_data;
@@ -65,13 +65,12 @@ int main(int argc, char *argv[]) {
     }
     // Construct the neural network, layer by layer
     nn_add_layer(nn, LAYER_TYPE_INPUT, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, NULL);
-/*
     cnn_t cnn = {
       .in_h = 28,
       .in_w = 28,
       .in_channels = 1,
-      .out_channels = 4,
-      .kernel_size = 3,
+      .out_channels = 8,
+      .kernel_size = 5,
       .stride = 1,
       .padding = 0,
       .dilation = 1,
@@ -79,9 +78,8 @@ int main(int argc, char *argv[]) {
       .bias_init = NN_INIT_ZEROS,
     };
     nn_add_layer(nn, LAYER_TYPE_CNN, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (cnn_t *)&cnn);
-*/
-    nn_add_layer(nn, LAYER_TYPE_FC, 100, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
-    nn_add_layer(nn, LAYER_TYPE_FC, 50, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
+    nn_add_layer(nn, LAYER_TYPE_FC, 120, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
+    nn_add_layer(nn, LAYER_TYPE_FC, 20, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
     nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, NULL);
   } else {
     printf("Using existing model file: %s\n", model_path);

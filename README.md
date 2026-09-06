@@ -113,6 +113,7 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
+* Add Gelu (Gaussian Error Linear Unit) and SiLU (Sigmoid Linear Unit) activation functions
 * Complete the CNN layer implementation
 * Add nn_load_model_memory for embedded use
 * Change pooling action to layer type that can be added to the model

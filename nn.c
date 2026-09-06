@@ -739,9 +739,13 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   // find the minimum of the function. Start at the output layer, and work
   // backward toward the input layer, adjusting weights along the way. Calculate
   // the error aka loss aka delta at the output.
-  // Compute output layer loss
+  // Compute output layer loss. This must include the output layer's own
+  // activation derivative here (not later), so that loss[] always
+  // uniformly represents -dE/d(preact) at every layer -- the propagation
+  // step below then never needs to re-derive a layer's own derivative from
+  // its neighbor's loss.
   for (j = 0; j < (int)nn->width[i]; j++) {
-    nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]);
+    nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]) * activation_function[nn->activation[i]](nn->preact[i][j], true);
   }
   // Backpropagate loss into earlier layers
   for (i = nn->depth - 2; i > 0; i--) {
@@ -760,8 +764,11 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       for (j = 0; j < (int)nn->width[i]; j++) {
         sum = 0.0f;
         for (k = 0; k < (int)nn->width[i + 1]; k++) {
-          // Apply the derivative of the activation function for the next layer's neurons
-          sum += nn->loss[i + 1][k] * activation_function[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
+          // loss[i+1][k] already has layer i+1's own activation derivative
+          // baked in (it was applied when loss[i+1] was computed, whether
+          // at output-layer init above or in this same branch one
+          // recursion level up) -- do not re-apply it here.
+          sum += nn->loss[i + 1][k] * nn->weight[i + 1][k][j];
         }
         // The chain rule dictates that we should multiply the summed loss by the
         // derivative of the activation at the current neuron, not only during

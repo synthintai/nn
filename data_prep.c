@@ -93,31 +93,90 @@ int data_num_lines(FILE *file)
 }
 
 // Parses file from path getting all inputs and outputs for the neural network.
-// Returns the data in a data structure.
+// Returns the data in a data structure. Reads the file in a single pass,
+// growing the row arrays (capacity doubling, like a typical dynamic array)
+// as needed, rather than first scanning the whole file just to count lines
+// (data_num_lines) and then rewinding to re-read it from the start -- for a
+// large CSV that halves the I/O and parsing work done at load time.
 data_t *data_load(char *path, int num_inputs, int num_outputs)
 {
-  int row;
   FILE *file;
   char *line = NULL;
   size_t len = 0;
-  int num_rows;
   data_t *data;
+  int capacity;
+  int row;
 
   file = fopen(path, "r");
   if (file == NULL) {
     return NULL;
   }
-  num_rows = data_num_lines(file);
-  data = data_init(num_rows, num_inputs, num_outputs);
-  if (NULL == data) {
+  data = (data_t *)malloc(sizeof(data_t));
+  if (data == NULL) {
+    fclose(file);
+    return NULL;
+  }
+  data->num_rows = 0;
+  data->num_inputs = num_inputs;
+  data->num_outputs = num_outputs;
+  capacity = 1024;
+  data->input = (float **)malloc(capacity * sizeof(float *));
+  data->target = (float **)malloc(capacity * sizeof(float *));
+  if (data->input == NULL || data->target == NULL) {
+    free(data->input);
+    free(data->target);
+    free(data);
     fclose(file);
     return NULL;
   }
   row = 0;
-  while (getline(&line, &len, file) != -1)
-    data_parse(data, line, row++);
+  while (getline(&line, &len, file) != -1) {
+    if (row == capacity) {
+      int new_capacity = capacity * 2;
+      // Reassign only on success -- on failure, data->input/data->target
+      // still point at their original (still valid, still owned) blocks,
+      // so data_free() below can safely tear everything down either way.
+      float **grown_input = (float **)realloc(data->input, new_capacity * sizeof(float *));
+      if (grown_input != NULL)
+        data->input = grown_input;
+      float **grown_target = (float **)realloc(data->target, new_capacity * sizeof(float *));
+      if (grown_target != NULL)
+        data->target = grown_target;
+      if (grown_input == NULL || grown_target == NULL) {
+        data->num_rows = row;
+        free(line);
+        fclose(file);
+        data_free(data);
+        return NULL;
+      }
+      capacity = new_capacity;
+    }
+    data->input[row] = (float *)malloc(num_inputs * sizeof(float));
+    data->target[row] = (float *)malloc(num_outputs * sizeof(float));
+    if (data->input[row] == NULL || data->target[row] == NULL) {
+      free(data->input[row]);
+      free(data->target[row]);
+      data->num_rows = row; // rows [0, row) are fully allocated; row itself just got freed above
+      free(line);
+      fclose(file);
+      data_free(data);
+      return NULL;
+    }
+    data_parse(data, line, row);
+    row++;
+  }
   free(line);
   fclose(file);
+  data->num_rows = row;
+  // Shrink the pointer arrays down to the exact row count actually read.
+  if (row > 0) {
+    float **shrunk_input = (float **)realloc(data->input, row * sizeof(float *));
+    if (shrunk_input != NULL)
+      data->input = shrunk_input;
+    float **shrunk_target = (float **)realloc(data->target, row * sizeof(float *));
+    if (shrunk_target != NULL)
+      data->target = shrunk_target;
+  }
   return data;
 }
 

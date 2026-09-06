@@ -97,6 +97,15 @@ typedef struct {
 } cnn_t;
 
 typedef struct {
+  uint16_t in_h;         // Input height (must match the previous layer's output geometry)
+  uint16_t in_w;         // Input width
+  uint8_t channels;      // # feature-map channels (must match the previous layer's # output channels)
+  uint8_t pool_size;     // Pooling window width and height (square)
+  uint8_t stride;        // Stride
+  pooling_type_t pooling_type; // POOLING_TYPE_MIN, POOLING_TYPE_MAX, or POOLING_TYPE_AVG
+} pool_t;
+
+typedef struct {
   bool quantized;         // Indicates if the network is quantized
   uint8_t version_major;  // Major version of the network model
   uint8_t version_minor;  // Minor version of the network model
@@ -117,6 +126,7 @@ typedef struct {
   float *bias_scale;      // Scale for each bias in each layer
   float **bias;           // Bias for each neuron
   int8_t **bias_quantized;// Quantized bias for each neuron
+  int **pool_argmax;      // Per POOL-MAX/MIN layer: winning input index for each output neuron (NULL otherwise)
 } nn_t;
 
 uint32_t nn_version(void);
@@ -135,6 +145,7 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index);
 bool nn_prune_lightest_neuron(nn_t *nn);
 void nn_pool2d(char *src, char *dest, int filter_size, int stride, pooling_type_t pooling_type, int x_in, int y_in);
 void nn_conv2d(nn_t *nn, int layer);
+void nn_pool_forward(nn_t *nn, int layer);
 nn_error_t nn_quantize(nn_t *nn);
 nn_error_t nn_dequantize(nn_t *nn);
 

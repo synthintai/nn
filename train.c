@@ -78,6 +78,18 @@ int main(int argc, char *argv[]) {
       .bias_init = NN_INIT_ZEROS,
     };
     nn_add_layer(nn, LAYER_TYPE_CNN, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (cnn_t *)&cnn);
+    // CNN output is 8 channels of 24x24 (28 - 5 + 1). Pool it down 2x2 -> 8x12x12
+    // before the first fully-connected layer, cutting that FC layer's weight
+    // count 4x (4608*120 -> 1152*120) and improving translation invariance.
+    pool_t pool = {
+      .in_h = 24,
+      .in_w = 24,
+      .channels = 8,
+      .pool_size = 2,
+      .stride = 2,
+      .pooling_type = POOLING_TYPE_MAX,
+    };
+    nn_add_layer(nn, LAYER_TYPE_POOL, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (pool_t *)&pool);
     nn_add_layer(nn, LAYER_TYPE_FC, 120, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
     nn_add_layer(nn, LAYER_TYPE_FC, 20, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
     nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, NULL);

@@ -153,6 +153,138 @@ static float error_derivative(float a, float b)
   return a - b;
 }
 
+// 2D pooling layer forward pass over the previous layer's (float) feature
+// maps. Supports MIN/MAX ("winner take all", cached for backprop routing)
+// and AVG (uniform reduction) pooling. Pooling has no weights/bias and no
+// activation function of its own -- preact[layer] simply mirrors neuron[layer]
+// so the generic activation-derivative machinery in nn_train() (with
+// nn->activation[layer] set to ACTIVATION_FUNCTION_TYPE_LINEAR) is a no-op.
+void nn_pool_forward(nn_t *nn, int layer)
+{
+  pool_t *pool = nn->config[layer];
+  const int channels = pool->channels;
+  const int psize = pool->pool_size;
+  const int stride = pool->stride;
+  const int x_out = ((pool->in_w - psize) / stride) + 1;
+  const int y_out = ((pool->in_h - psize) / stride) + 1;
+  const int plane_out = x_out * y_out;
+  const int plane_in = pool->in_w * pool->in_h;
+  // Sanity-check shapes
+  if ((channels <= 0) || ((uint32_t)channels * plane_out != nn->width[layer])) {
+    fprintf(stderr, "pool2d: inconsistent shape (channels=%d, plane_out=%d, width[%d]=%u)\n", channels, plane_out, layer, nn->width[layer]);
+    return;
+  }
+  const float *in = nn->neuron[layer - 1];
+  float *out = nn->neuron[layer];
+  float *pre = nn->preact[layer];
+  int *argmax = nn->pool_argmax[layer]; // NULL unless MIN/MAX pooling
+
+  for (int c = 0; c < channels; ++c) {
+    for (int oy = 0; oy < y_out; ++oy) {
+      const int in_y = oy * stride;
+      for (int ox = 0; ox < x_out; ++ox) {
+        const int in_x = ox * stride;
+        const int oidx = c * plane_out + oy * x_out + ox;
+        float result = 0.0f;
+        int winner = -1;
+        switch (pool->pooling_type) {
+          case POOLING_TYPE_MAX: {
+            float best = -FLT_MAX;
+            for (int ky = 0; ky < psize; ++ky) {
+              for (int kx = 0; kx < psize; ++kx) {
+                int in_idx = c * plane_in + (in_y + ky) * pool->in_w + (in_x + kx);
+                if (in[in_idx] > best) {
+                  best = in[in_idx];
+                  winner = in_idx;
+                }
+              }
+            }
+            result = best;
+            break;
+          }
+          case POOLING_TYPE_MIN: {
+            float best = FLT_MAX;
+            for (int ky = 0; ky < psize; ++ky) {
+              for (int kx = 0; kx < psize; ++kx) {
+                int in_idx = c * plane_in + (in_y + ky) * pool->in_w + (in_x + kx);
+                if (in[in_idx] < best) {
+                  best = in[in_idx];
+                  winner = in_idx;
+                }
+              }
+            }
+            result = best;
+            break;
+          }
+          case POOLING_TYPE_AVG: {
+            float sum = 0.0f;
+            for (int ky = 0; ky < psize; ++ky)
+              for (int kx = 0; kx < psize; ++kx)
+                sum += in[c * plane_in + (in_y + ky) * pool->in_w + (in_x + kx)];
+            result = sum / (float)(psize * psize);
+            break;
+          }
+          case POOLING_TYPE_NONE:
+          default:
+            result = 0.0f;
+            break;
+        }
+        out[oidx] = result;
+        pre[oidx] = result;
+        if (argmax)
+          argmax[oidx] = winner;
+      }
+    }
+  }
+}
+
+// Routes/distributes a pooling layer's loss (dE/d(pool output), already
+// computed in nn->loss[layer]) back into grad_in, which must be zeroed by the
+// caller and sized to the pooling layer's input width (i.e. the previous
+// layer's width). MIN/MAX pooling route the full gradient to the single
+// cached winning input position; AVG pooling distributes it evenly across
+// every input position in the window.
+static void nn_pool_backward(nn_t *nn, int layer, float *grad_in)
+{
+  pool_t *pool = nn->config[layer];
+  const int channels = pool->channels;
+  const int psize = pool->pool_size;
+  const int stride = pool->stride;
+  const int x_out = ((pool->in_w - psize) / stride) + 1;
+  const int y_out = ((pool->in_h - psize) / stride) + 1;
+  const int plane_out = x_out * y_out;
+  const int plane_in = pool->in_w * pool->in_h;
+  const float *loss = nn->loss[layer];
+  const int *argmax = nn->pool_argmax[layer];
+
+  for (int c = 0; c < channels; ++c) {
+    for (int oy = 0; oy < y_out; ++oy) {
+      const int in_y = oy * stride;
+      for (int ox = 0; ox < x_out; ++ox) {
+        const int in_x = ox * stride;
+        const int oidx = c * plane_out + oy * x_out + ox;
+        const float g = loss[oidx];
+        switch (pool->pooling_type) {
+          case POOLING_TYPE_MAX:
+          case POOLING_TYPE_MIN:
+            grad_in[argmax[oidx]] += g;
+            break;
+          case POOLING_TYPE_AVG: {
+            const float share = g / (float)(psize * psize);
+            for (int ky = 0; ky < psize; ++ky)
+              for (int kx = 0; kx < psize; ++kx)
+                grad_in[c * plane_in + (in_y + ky) * pool->in_w + (in_x + kx)] += share;
+            break;
+          }
+          case POOLING_TYPE_NONE:
+          default:
+            break;
+        }
+      }
+    }
+  }
+}
+
 static void forward_propagation(nn_t *nn)
 {
   float sum;
@@ -190,7 +322,7 @@ static void forward_propagation(nn_t *nn)
         break;
       case LAYER_TYPE_POOL:
         // Pooling Layer
-        // TODO: Need to stitch in pooling code here
+        nn_pool_forward(nn, i);
         break;
       case LAYER_TYPE_LSTM:
         // Long Short-Term Memory Layer
@@ -260,6 +392,7 @@ nn_t *nn_init(void)
   nn->weight_scale = NULL;
   nn->bias_quantized = NULL;
   nn->bias_scale = NULL;
+  nn->pool_argmax = NULL;
   return nn;
 }
 
@@ -282,6 +415,8 @@ void nn_free(nn_t *nn)
         free(nn->weight_adj[layer]);
         // length = out_channels
         free(nn->bias[layer]);
+      } else if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
+        // Pooling layers have no weights/bias (weight/weight_adj/bias are NULL)
       } else {
         // Free each neuron's weight and weight_adj in this layer
         for (int i = 0; i < (int)nn->width[layer]; i++) {
@@ -292,6 +427,9 @@ void nn_free(nn_t *nn)
         free(nn->weight_adj[layer]);
         free(nn->bias[layer]);
       }
+      // weight_scale[layer] is a flat per-layer array (or NULL for POOL) in
+      // every case above; free(NULL) is a no-op so this is safe uniformly.
+      free(nn->weight_scale[layer]);
       free(nn->config[layer]);
       free(nn->neuron[layer]);
       free(nn->loss[layer]);
@@ -299,6 +437,9 @@ void nn_free(nn_t *nn)
     }
     free(nn->weight);
     free(nn->weight_adj);
+    free(nn->weight_scale);
+    free(nn->bias);
+    free(nn->bias_scale);
     free(nn->neuron);
     free(nn->loss);
     free(nn->preact);
@@ -321,6 +462,8 @@ void nn_free(nn_t *nn)
         free(nn->weight_adj[layer]);
         // length = out_channels
         free(nn->bias[layer]);
+      } else if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
+        // Pooling layers have no weights/bias
       } else {
         int curr_w = nn->width[layer];
         for (int neuron = 0; neuron < curr_w; neuron++) {
@@ -347,12 +490,19 @@ void nn_free(nn_t *nn)
     free(nn->activation);
     free(nn->config);
   }
+  // Free the pooling argmax cache (independent of quantized state)
+  if (nn->pool_argmax) {
+    for (int layer = 1; layer < (int)nn->depth; layer++)
+      free(nn->pool_argmax[layer]);
+    free(nn->pool_argmax);
+  }
   free(nn);
 }
 
 nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activation, void *config)
 {
   cnn_t *cnn = NULL;
+  pool_t *pool = NULL;
 
   // Increase depth by one
   nn->depth++;
@@ -371,6 +521,12 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
     }
     cnn = (cnn_t *)config;
     nn->width[nn->depth - 1] = cnn->out_channels * (((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1) * (((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1);
+  } else if (layer_type == LAYER_TYPE_POOL) {
+    if (config == NULL) {
+      return NN_ERROR_INVALID_CONFIG;
+    }
+    pool = (pool_t *)config;
+    nn->width[nn->depth - 1] = pool->channels * (((pool->in_w - pool->pool_size) / pool->stride) + 1) * (((pool->in_h - pool->pool_size) / pool->stride) + 1);
   }
   nn->activation = (uint8_t *)realloc(nn->activation, nn->depth * sizeof(*nn->activation));
   if (nn->activation == NULL)
@@ -386,6 +542,12 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       return NN_ERROR_OUT_OF_MEMORY;
     // Copy the CNN configuration
     memcpy(nn->config[nn->depth - 1], config, sizeof(cnn_t));
+  } else if (layer_type == LAYER_TYPE_POOL) {
+    nn->config[nn->depth - 1] = (void *)malloc(sizeof(pool_t));
+    if (nn->config[nn->depth - 1] == NULL)
+      return NN_ERROR_OUT_OF_MEMORY;
+    // Copy the pooling configuration
+    memcpy(nn->config[nn->depth - 1], config, sizeof(pool_t));
   }
   nn->neuron = (float **)realloc(nn->neuron, nn->depth * sizeof(float *));
   if (nn->neuron == NULL)
@@ -411,6 +573,10 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
   nn->bias_scale = (float *)realloc(nn->bias_scale, (nn->depth) * sizeof(float));
   if (nn->bias_scale == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
+  nn->pool_argmax = (int **)realloc(nn->pool_argmax, (nn->depth) * sizeof(int *));
+  if (nn->pool_argmax == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->pool_argmax[nn->depth - 1] = NULL;
   // For layer 0, we do not allocate neuron/loss/preact (input is provided externally)
   if (nn->depth > 1) {
     nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
@@ -449,6 +615,19 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       // one bias per output-channel
       for (int oc = 0; oc < cnn->out_channels; ++oc)
         nn->bias[nn->depth - 1][oc] = 0.0f;
+    } else if (layer_type == LAYER_TYPE_POOL) {
+      // Pooling has no learnable parameters
+      nn->weight[nn->depth - 1] = NULL;
+      nn->weight_adj[nn->depth - 1] = NULL;
+      nn->weight_scale[nn->depth - 1] = NULL;
+      nn->bias[nn->depth - 1] = NULL;
+      // MIN/MAX pooling need to remember which input position "won" each
+      // output, so backprop can route the gradient to only that position.
+      if (pool->pooling_type == POOLING_TYPE_MAX || pool->pooling_type == POOLING_TYPE_MIN) {
+        nn->pool_argmax[nn->depth - 1] = (int *)malloc(nn->width[nn->depth - 1] * sizeof(int));
+        if (nn->pool_argmax[nn->depth - 1] == NULL)
+          return NN_ERROR_OUT_OF_MEMORY;
+      }
     } else {
       nn->weight[nn->depth - 1] = (float **)malloc(nn->width[nn->depth - 1] * sizeof(float *));
       if (nn->weight[nn->depth - 1] == NULL)
@@ -541,16 +720,29 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   }
   // Backpropagate loss into earlier layers
   for (i = nn->depth - 2; i > 0; i--) {
-    for (j = 0; j < (int)nn->width[i]; j++) {
-      sum = 0.0f;
-      for (k = 0; k < (int)nn->width[i + 1]; k++) {
-        // Apply the derivative of the activation function for the next layer's neurons
-        sum += nn->loss[i + 1][k] * activation_function[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
+    if (nn->layer_type[i + 1] == LAYER_TYPE_POOL) {
+      // Pooling has no weight matrix -- route/distribute the gradient
+      // directly according to the pooling type instead of the generic
+      // weighted-sum formula below. Accumulate routed gradients straight
+      // into loss[i] (zeroed first), then apply layer i's own activation
+      // derivative in place, same as the generic case does.
+      memset(nn->loss[i], 0, nn->width[i] * sizeof(float));
+      nn_pool_backward(nn, i + 1, nn->loss[i]);
+      for (j = 0; j < (int)nn->width[i]; j++) {
+        nn->loss[i][j] *= activation_function[nn->activation[i]](nn->preact[i][j], true);
       }
-      // The chain rule dictates that we should multiply the summed loss by the
-      // derivative of the activation at the current neuron, not only during
-      // weight updates, but immediately when calculating loss[i][j].
-      nn->loss[i][j] = sum * activation_function[nn->activation[i]](nn->preact[i][j], true);
+    } else {
+      for (j = 0; j < (int)nn->width[i]; j++) {
+        sum = 0.0f;
+        for (k = 0; k < (int)nn->width[i + 1]; k++) {
+          // Apply the derivative of the activation function for the next layer's neurons
+          sum += nn->loss[i + 1][k] * activation_function[nn->activation[i + 1]](nn->preact[i + 1][k], true) * nn->weight[i + 1][k][j];
+        }
+        // The chain rule dictates that we should multiply the summed loss by the
+        // derivative of the activation at the current neuron, not only during
+        // weight updates, but immediately when calculating loss[i][j].
+        nn->loss[i][j] = sum * activation_function[nn->activation[i]](nn->preact[i][j], true);
+      }
     }
   }
   // Update biases (gradient descent step)
@@ -567,11 +759,13 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
           db += nn->loss[i][j * plane + k];
         nn->bias[i][j] += db * rate;
       }
+    } else if (nn->layer_type[i] == LAYER_TYPE_POOL) {
+      // Pooling has no bias
     } else {
         // FC / output layers
         for (j = 0; j < (int)nn->width[i]; j++)
             nn->bias[i][j] += nn->loss[i][j] * rate;
-    }  
+    }
   }
   // Calculate the weight adjustments. Note that their update is delayed until
   // after full backprop traversal. The weights cannot be updated while
@@ -609,6 +803,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
           }
         }
       }
+    } else if (nn->layer_type[i] == LAYER_TYPE_POOL) {
+      // Pooling has no weights
     } else {
       // FC / output layers
       for (j = 0; j < (int)nn->width[i]; j++)
@@ -625,6 +821,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       for (j = 0; j < kernels; ++j)
         for (k = 0; k < k_elems; ++k)
           nn->weight[i][j][k] += nn->weight_adj[i][j][k] * rate;
+    } else if (nn->layer_type[i] == LAYER_TYPE_POOL) {
+      // Pooling has no weights
     } else {
       // FC / output layers
       for (j = 0; j < (int)nn->width[i]; j++)
@@ -691,7 +889,9 @@ nn_t *nn_load_model_ascii(const char *path)
       nn_free(nn);
       return NULL;
     }
-    cnn_t ctmp, *cptr = NULL;
+    cnn_t ctmp;
+    pool_t ptmp;
+    void *cptr = NULL;
     if (layer_type == LAYER_TYPE_CNN) {
       if (fscanf(file, " %hu %hu %hhu %hhu %hhu %hhu %hhu %hhu", &ctmp.in_h, &ctmp.in_w, &ctmp.in_channels, &ctmp.out_channels, &ctmp.kernel_size, &ctmp.stride, &ctmp.padding, &ctmp.dilation) != 8) {
         fclose(file);
@@ -699,6 +899,17 @@ nn_t *nn_load_model_ascii(const char *path)
         return NULL;
       }
       cptr = &ctmp;
+      // nn_add_layer will recompute width
+      w = 0;
+    } else if (layer_type == LAYER_TYPE_POOL) {
+      int pt;
+      if (fscanf(file, " %hu %hu %hhu %hhu %hhu %d", &ptmp.in_h, &ptmp.in_w, &ptmp.channels, &ptmp.pool_size, &ptmp.stride, &pt) != 6) {
+        fclose(file);
+        nn_free(nn);
+        return NULL;
+      }
+      ptmp.pooling_type = (pooling_type_t)pt;
+      cptr = &ptmp;
       // nn_add_layer will recompute width
       w = 0;
     }
@@ -710,26 +921,9 @@ nn_t *nn_load_model_ascii(const char *path)
       return NULL;
     }
   }
-  // Allocate or reallocate neuron/loss/preact pointers for both float and quantized cases:
-  nn->neuron = (float **)realloc(nn->neuron, nn->depth * sizeof(float *));
-  nn->loss = (float **)realloc(nn->loss, nn->depth * sizeof(float *));
-  nn->preact = (float **)realloc(nn->preact, nn->depth * sizeof(float *));
-  if (!nn->neuron || !nn->loss || !nn->preact) {
-    fclose(file);
-    nn_free(nn);
-    return NULL;
-  }
-  // For layer 0 we do not allocate an array; layer 0's neuron pointer is set to inputs in nn_predict.
-  for (int layer = 1; layer < nn->depth; layer++) {
-    nn->neuron[layer] = (float *)malloc(nn->width[layer] * sizeof(float));
-    nn->loss[layer] = (float *)malloc(nn->width[layer] * sizeof(float));
-    nn->preact[layer] = (float *)malloc(nn->width[layer] * sizeof(float));
-    if (!nn->neuron[layer] || !nn->loss[layer] || !nn->preact[layer]) {
-      fclose(file);
-      nn_free(nn);
-      return NULL;
-    }
-  }
+  // Note: neuron/loss/preact for every layer >= 1 were already allocated by
+  // nn_add_layer() inside the layer-construction loop above; re-allocating
+  // them here would just leak those allocations.
   // If float mode, read floats into nn->weight / nn->bias
   if (!nn->quantized) {
     for (int layer = 1; layer < nn->depth; layer++) {
@@ -760,6 +954,8 @@ nn_t *nn_load_model_ascii(const char *path)
           if (fscanf(file, "%f\n", &nn->bias[layer][oc]) != 1)
             goto cleanup_float;
         }
+      } else if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
+        // Pooling has no weights/bias beyond the placeholder line already consumed above
       } else {
         // Fully-connected / output layer
         for (int i = 0; i < (int)nn->width[layer]; i++) {
@@ -960,47 +1156,61 @@ nn_t *nn_load_model_binary(const char *path)
       goto error;
     if (fread(&a, sizeof(a), 1, file) != 1)
       goto error;
-    cnn_t ctmp, *cptr = NULL;
+    cnn_t ctmp;
+    pool_t ptmp;
+    void *cptr = NULL;
     if (layer_type == LAYER_TYPE_CNN) {
       if (fread(&ctmp, sizeof(ctmp), 1, file) != 1)
         goto error;
       cptr = &ctmp; w = 0;
+    } else if (layer_type == LAYER_TYPE_POOL) {
+      if (fread(&ptmp, sizeof(ptmp), 1, file) != 1)
+        goto error;
+      cptr = &ptmp; w = 0;
     }
     if (nn_add_layer(nn, layer_type, (int)w, (int)a, cptr) != 0)
      goto cleanup;
   }
-  // Allocate neuron/loss/preact arrays
-  nn->neuron = realloc(nn->neuron, depth * sizeof(float *));
-  nn->loss = realloc(nn->loss, depth * sizeof(float *));
-  nn->preact = realloc(nn->preact, depth * sizeof(float *));
-  if (!nn->neuron || !nn->loss || !nn->preact)
-    goto cleanup;
-  for (int L = 1; L < (int)depth; L++) {
-    nn->neuron[L] = malloc(nn->width[L] * sizeof(float));
-    nn->loss[L] = malloc(nn->width[L] * sizeof(float));
-    nn->preact[L] = malloc(nn->width[L] * sizeof(float));
-    if (!nn->neuron[L] || !nn->loss[L] || !nn->preact[L])
-      goto cleanup;
-  }
+  // Note: neuron/loss/preact for every layer >= 1 were already allocated by
+  // nn_add_layer() inside the layer-construction loop above; re-allocating
+  // them here would just leak those allocations.
   // Read weights & biases
   if (!nn->quantized) {
     // Float-mode: read dummy scales + real floats
     for (int L = 1; L < (int)depth; L++) {
-      uint32_t curr = nn->width[L], prev = nn->width[L - 1];
       float dummy;
       // bias_scale placeholder
       if (fread(&dummy, sizeof(dummy), 1, file) != 1)
         goto cleanup;
-      for (uint32_t i = 0; i < curr; i++) {
-        // weight_scale placeholder
-        if (fread(&dummy, sizeof(dummy), 1, file) != 1)
+      if (nn->layer_type[L] == LAYER_TYPE_CNN) {
+        cnn_t *c = nn->config[L];
+        int kernels = c->out_channels * c->in_channels;
+        int k_elems = c->kernel_size * c->kernel_size;
+        for (int k = 0; k < kernels; ++k) {
+          // per-kernel weight-scale placeholder
+          if (fread(&dummy, sizeof(dummy), 1, file) != 1)
+            goto cleanup;
+          if (fread(nn->weight[L][k], sizeof(float), k_elems, file) != (size_t)k_elems)
+            goto cleanup;
+        }
+        // One bias per output channel
+        if (fread(nn->bias[L], sizeof(float), c->out_channels, file) != (size_t)c->out_channels)
           goto cleanup;
-        // weights
-        if (fread(nn->weight[L][i], sizeof(float), prev, file) != prev)
-          goto cleanup;
-        // bias
-        if (fread(&nn->bias[L][i], sizeof(float), 1, file) != 1)
-          goto cleanup;
+      } else if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+        // Pooling has no weights/bias beyond the placeholder read above
+      } else {
+        uint32_t curr = nn->width[L], prev = nn->width[L - 1];
+        for (uint32_t i = 0; i < curr; i++) {
+          // weight_scale placeholder
+          if (fread(&dummy, sizeof(dummy), 1, file) != 1)
+            goto cleanup;
+          // weights
+          if (fread(nn->weight[L][i], sizeof(float), prev, file) != prev)
+            goto cleanup;
+          // bias
+          if (fread(&nn->bias[L][i], sizeof(float), 1, file) != 1)
+            goto cleanup;
+        }
       }
     }
   } else {
@@ -1097,6 +1307,9 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
     if (nn->layer_type[i] == LAYER_TYPE_CNN) {
       cnn_t *c = nn->config[i];
       fprintf(file, " %d %d %d %d %d %d %d %d", c->in_h, c->in_w, c->in_channels, c->out_channels, c->kernel_size, c->stride, c->padding, c->dilation);
+    } else if (nn->layer_type[i] == LAYER_TYPE_POOL) {
+      pool_t *p = nn->config[i];
+      fprintf(file, " %d %d %d %d %d %d", p->in_h, p->in_w, p->channels, p->pool_size, p->stride, (int)p->pooling_type);
     }
     fputc('\n', file);
   }
@@ -1121,6 +1334,8 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
         }
         for (int oc = 0; oc < c->out_channels; ++oc)
           fprintf(file, "%f\n", nn->bias[layer][oc]);
+      } else if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
+        // Pooling has no weights/bias beyond the placeholder line already written above
       } else {
         // FC / output
         for (int i = 0; i < (int)nn->width[layer]; i++) {
@@ -1183,6 +1398,9 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
       cnn_t *c = nn->config[i];
       // Struct is POD -> dump
       fwrite(c, sizeof(cnn_t), 1, file);
+    } else if (layer_type == LAYER_TYPE_POOL) {
+      pool_t *p = nn->config[i];
+      fwrite(p, sizeof(pool_t), 1, file);
     }
   }
   // Weights & biases
@@ -1191,12 +1409,26 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
     for (uint32_t L = 1; L < depth; L++) {
       float bias_scale = 0.0f;
       fwrite(&bias_scale, sizeof(bias_scale), 1, file);
-      uint32_t curr = nn->width[L], prev = nn->width[L - 1];
-      for (uint32_t i = 0; i < curr; i++) {
-        float weight_scale = 0.0f;
-        fwrite(&weight_scale, sizeof(weight_scale), 1, file);
-        fwrite(nn->weight[L][i], sizeof(float), prev, file);
-        fwrite(&nn->bias[L][i], sizeof(float), 1, file);
+      if (nn->layer_type[L] == LAYER_TYPE_CNN) {
+        cnn_t *c = nn->config[L];
+        int kernels = c->out_channels * c->in_channels;
+        int k_elems = c->kernel_size * c->kernel_size;
+        for (int k = 0; k < kernels; ++k) {
+          float weight_scale = 0.0f;
+          fwrite(&weight_scale, sizeof(weight_scale), 1, file);
+          fwrite(nn->weight[L][k], sizeof(float), k_elems, file);
+        }
+        fwrite(nn->bias[L], sizeof(float), c->out_channels, file);
+      } else if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+        // Pooling has no weights/bias beyond the placeholder written above
+      } else {
+        uint32_t curr = nn->width[L], prev = nn->width[L - 1];
+        for (uint32_t i = 0; i < curr; i++) {
+          float weight_scale = 0.0f;
+          fwrite(&weight_scale, sizeof(weight_scale), 1, file);
+          fwrite(nn->weight[L][i], sizeof(float), prev, file);
+          fwrite(&nn->bias[L][i], sizeof(float), 1, file);
+        }
       }
     }
   } else {

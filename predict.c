@@ -9,8 +9,9 @@
 #include <stdio.h>
 #include "nn.h"
 
-int main(void) {
+int main(int argc, char *argv[]) {
   nn_t *model;
+  const char *model_path = (argc > 1) ? argv[1] : "model.txt";
 
   // Test data upon which to make a prediction
   // This is a 16x16 matrix of single bits
@@ -32,8 +33,9 @@ int main(void) {
       0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
       0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0,
   };
-  // Recall a previously trained neural network model, inclusive of its weights
-  model = nn_load_model_ascii("model.txt");
+  // Recall a previously trained neural network model, inclusive of its
+  // weights (ascii or binary, auto-detected)
+  model = nn_load_model(model_path);
   if (NULL == model) {
     printf("Error: Missing or invalid model file.\n");
     return 1;

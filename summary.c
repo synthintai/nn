@@ -26,7 +26,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   const char *model_path = argv[1];
-  nn_t *network = nn_load_model_ascii(model_path);
+  nn_t *network = nn_load_model(model_path);
   if (!network) {
     fprintf(stderr, "Failed to load model: %s\n", model_path);
     return 1;

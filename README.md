@@ -99,7 +99,13 @@ https://www.youtube.com/watch?v=cqjwSkrGtww
 
 ## Model File Format
 
-The model file is saved as an ASCII file of floating-point values. The first line depicts the number of layers, inclusive of the input and output layers. The construct of each of those layers comprises the next set of lines, one line for each layer. The format of each line is width (in neurons), activation function, and bias. The remaining lines are the weights of each neuron in each layer, for all layers. Since there are no weights associated with the neurons in the input layer, these are skipped, and do not exist in the model file.
+The model can be saved in either of two formats:
+
+* **ASCII** - a text file of floating-point values. The first line depicts the number of layers, inclusive of the input and output layers. The construct of each of those layers comprises the next set of lines, one line for each layer. The format of each line is width (in neurons), activation function, and bias. The remaining lines are the weights of each neuron in each layer, for all layers. Since there are no weights associated with the neurons in the input layer, these are skipped, and do not exist in the model file.
+
+* **Binary** - a compact, raw binary encoding of the same information. Every binary model file begins with the 4-byte magic number `NNB1`, followed by the same fields the ASCII format stores (quantized flag, version, layer definitions, weights, and biases), written as raw integers/floats rather than text.
+
+`nn_load_model()` reads a model file's first few bytes and dispatches to the ASCII or binary loader automatically based on the magic number, so any tool that calls it can open either kind of model file without knowing in advance which format it's in. `nn_save_model()` writes binary format when the destination path ends in `.bin` (case-insensitive) and ASCII format otherwise. `train`, `test`, `predict`, `prune`, `quantize`, `dequantize`, and `summary` all use these, so passing e.g. `model.bin` instead of `model.txt` is enough to train, evaluate, prune, (de)quantize, or run inference against a binary model file. `nn_load_model_ascii`/`nn_save_model_ascii` and `nn_load_model_binary`/`nn_save_model_binary` remain available for callers that need to force a specific format regardless of extension (as `export` and `import` do, to convert between the two).
 
 ## Integration
 

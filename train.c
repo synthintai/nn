@@ -18,7 +18,7 @@
 int main(int argc, char *argv[]) {
   if (argc != 2) {
     printf("Usage: %s <model-file>\n", argv[0]);
-    printf("  <model-file> : Path to the neural net model to load or create (e.g., model.txt)\n");
+    printf("  <model-file> : Path to the neural net model to load or create (e.g., model.txt or model.bin)\n");
     return 1;
   }
   const char *model_path = argv[1];
@@ -53,7 +53,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   // Attempt to load an existing model
-  nn = nn_load_model_ascii((char *)model_path);
+  nn = nn_load_model((char *)model_path);
   if (nn == NULL) {
     printf("Creating new model.\n");
     nn = nn_init();
@@ -129,7 +129,7 @@ int main(int argc, char *argv[]) {
     printf("%.5f, %.5f, %.5f\n", train_error, validation_error, learning_rate);
     learning_rate *= annealing;
     // Save the neural network architecture and weights to the specified file
-    nn_save_model_ascii(nn, (char *)model_path);
+    nn_save_model(nn, (char *)model_path);
   }
   data_free(validation_data);
   data_free(train_data);

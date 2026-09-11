@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <ctype.h>
 #include <float.h>
 #include <inttypes.h>
 #include <math.h>
@@ -16,6 +17,12 @@
 #include "nn.h"
 
 // Private functions
+
+// First 4 bytes of every binary model file, so nn_load_model() can tell a
+// binary model file apart from an ascii one by content rather than by
+// trusting the file extension.
+#define NN_BINARY_MAGIC_LEN 4
+static const uint8_t NN_BINARY_MAGIC[NN_BINARY_MAGIC_LEN] = {'N', 'N', 'B', '1'};
 
 typedef float (*activation_function_t)(float a, bool derivative);
 
@@ -1122,6 +1129,13 @@ nn_t *nn_load_model_binary(const char *path)
   FILE *file = fopen(path, "rb");
   if (!file)
     return NULL;
+  // Magic number
+  uint8_t magic[NN_BINARY_MAGIC_LEN];
+  if (fread(magic, 1, NN_BINARY_MAGIC_LEN, file) != NN_BINARY_MAGIC_LEN ||
+      memcmp(magic, NN_BINARY_MAGIC, NN_BINARY_MAGIC_LEN) != 0) {
+    fclose(file);
+    return NULL;
+  }
   nn_t *nn = nn_init();
   if (!nn) {
     fclose(file);
@@ -1386,6 +1400,8 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
   FILE *file = fopen(path, "wb");
   if (!file)
     return NN_ERROR_FILE_WRITE;
+  // Magic number
+  fwrite(NN_BINARY_MAGIC, 1, NN_BINARY_MAGIC_LEN, file);
   // Quantized flag
   uint8_t qflag = nn->quantized ? 1 : 0;
   fwrite(&qflag, sizeof(qflag), 1, file);
@@ -1465,6 +1481,33 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
   }
   fclose(file);
   return NN_ERROR_NONE;
+}
+
+// Loads a model file, auto-detecting ascii vs. binary by peeking for the
+// binary format's magic number.
+nn_t *nn_load_model(const char *path)
+{
+  FILE *file = fopen(path, "rb");
+  if (!file)
+    return NULL;
+  uint8_t magic[NN_BINARY_MAGIC_LEN];
+  bool is_binary = fread(magic, 1, NN_BINARY_MAGIC_LEN, file) == NN_BINARY_MAGIC_LEN &&
+                    memcmp(magic, NN_BINARY_MAGIC, NN_BINARY_MAGIC_LEN) == 0;
+  fclose(file);
+  return is_binary ? nn_load_model_binary(path) : nn_load_model_ascii(path);
+}
+
+// Saves a model file, writing binary format if `path` ends in ".bin"
+// (case-insensitive) and ascii format otherwise.
+nn_error_t nn_save_model(nn_t *nn, const char *path)
+{
+  size_t path_len = strlen(path);
+  static const char ext[] = ".bin";
+  size_t ext_len = sizeof(ext) - 1;
+  bool is_binary = path_len >= ext_len;
+  for (size_t i = 0; is_binary && i < ext_len; i++)
+    is_binary = tolower((unsigned char)path[path_len - ext_len + i]) == ext[i];
+  return is_binary ? nn_save_model_binary(nn, path) : nn_save_model_ascii(nn, path);
 }
 
 nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)

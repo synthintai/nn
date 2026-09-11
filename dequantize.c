@@ -26,7 +26,7 @@ int main(int argc, char *argv[])
   const char *input_model = argv[1];
   const char *output_model = argv[2];
   // Load the original floating-point network
-  nn_t *network = nn_load_model_ascii((char *)input_model);
+  nn_t *network = nn_load_model((char *)input_model);
   if (!network) {
     fprintf(stderr, "Failed to load input model: %s\n", input_model);
     return 1;
@@ -43,7 +43,7 @@ int main(int argc, char *argv[])
     return 1;
   }
   // Save the dequantized network
-  if (nn_save_model_ascii(network, output_model) != 0) {
+  if (nn_save_model(network, output_model) != 0) {
     fprintf(stderr, "Failed to save dequantized model: %s\n", output_model);
     nn_free(network);
     return 1;

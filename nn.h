@@ -14,7 +14,7 @@
 // NN API Version
 #define NN_VERSION_MAJOR 0
 #define NN_VERSION_MINOR 1
-#define NN_VERSION_PATCH 7
+#define NN_VERSION_PATCH 8
 #define NN_VERSION_BUILD 0
 
 typedef enum {
@@ -149,6 +149,13 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path);
 nn_error_t nn_save_model_binary(nn_t *nn, const char *path);
 nn_t *nn_load_model_ascii(const char *path);
 nn_t *nn_load_model_binary(const char *path);
+// Loads a model file, auto-detecting ascii vs. binary from the binary
+// format's magic number -- use this instead of nn_load_model_{ascii,binary}
+// when the caller doesn't know (or care) which format a model file is in.
+nn_t *nn_load_model(const char *path);
+// Saves a model file, writing binary format if `path` ends in ".bin"
+// (case-insensitive) and ascii format otherwise.
+nn_error_t nn_save_model(nn_t *nn, const char *path);
 float nn_error(nn_t *nn, float *inputs, float *targets);
 float nn_train(nn_t *nn, float *inputs, float *targets, float rate);
 float *nn_predict(nn_t *nn, float *inputs);

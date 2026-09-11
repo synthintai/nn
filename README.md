@@ -113,20 +113,17 @@ To use this nn library in your own embedded system, it is only necessary to pull
 
 ## License
 
-Copyright (c) 2019-2025 SynthInt Technologies, LLC. All rights reserved.
+Copyright (c) 2019-2026 SynthInt Technologies, LLC. All rights reserved.
 
 Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
 * Add Gelu (Gaussian Error Linear Unit) and SiLU (Sigmoid Linear Unit) activation functions
-* Complete the CNN layer implementation
 * Add nn_load_model_memory for embedded use
-* Change pooling action to layer type that can be added to the model
 * Add padding parms to conv2d
 * If using padding: feature_map_size = (N-F+2*P)/(S+1) <--the 2P is the padding
 * Add dropout layer type
-* Handle back prop for pooling layer
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
 * Add RNN feature
 * Implement softmax layer

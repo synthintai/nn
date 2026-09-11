@@ -136,6 +136,19 @@ static float activation_function_tanh_fast(float a, bool derivative)
   return a / (1.0f + fabsf(a));
 }
 
+// Gaussian Error Linear Unit (GELU) activation function
+static float activation_function_gelu(float a, bool derivative)
+{
+  const float inv_sqrt2 = 0.70710678118654752440f;
+  const float inv_sqrt2pi = 0.39894228040143267794f;
+  float cdf = 0.5f * (1.0f + erff(a * inv_sqrt2));
+  if (derivative) {
+    float pdf = inv_sqrt2pi * expf(-0.5f * a * a);
+    return cdf + a * pdf;
+  }
+  return a * cdf;
+}
+
 // These must be in the same order as the enum activation_function_type
 static activation_function_t activation_function[] = {
     activation_function_none,
@@ -147,7 +160,8 @@ static activation_function_t activation_function[] = {
     activation_function_sigmoid,
     activation_function_sigmoid_fast,
     activation_function_tanh,
-    activation_function_tanh_fast};
+    activation_function_tanh_fast,
+    activation_function_gelu};
 
 // Computes the error given a cost function
 // The loss function is a basic mean-square error (MSE)

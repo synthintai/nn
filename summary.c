@@ -12,7 +12,8 @@
 // Activation function names must exactly match the enum in nn.h
 static const char *activation_names[] = {
     "NONE",      "LINEAR",  "RELU",         "LEAKY_RELU", "ELU",
-    "THRESHOLD", "SIGMOID", "SIGMOID_FAST", "TANH",       "TANH_FAST"};
+    "THRESHOLD", "SIGMOID", "SIGMOID_FAST", "TANH",       "TANH_FAST",
+    "GELU"};
 
 static const char *layer_types[] = {
     "NONE",        "FC",         "CNN",        "POOL",       "LSTM",

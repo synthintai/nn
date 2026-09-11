@@ -42,6 +42,7 @@ With this library, neural networks of any width and depth may be constructed and
 * Threshold
 * Sigmoid
 * TanH
+* GELU
 
 Different activation functions may be assigned to each layer in the network.
 
@@ -119,7 +120,7 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Add Gelu (Gaussian Error Linear Unit) and SiLU (Sigmoid Linear Unit) activation functions
+* Add SiLU (Sigmoid Linear Unit) activation function
 * Add nn_load_model_memory for embedded use
 * Add padding parms to conv2d
 * If using padding: feature_map_size = (N-F+2*P)/(S+1) <--the 2P is the padding

@@ -1,5 +1,10 @@
 CFLAGS=-Wall -Ofast -march=native -flto -fPIC
-LDFLAGS=-lm -s
+# -lmvec: softmax's forward pass and the cross-entropy loss (nn.c) call
+# expf()/logf() in simple loops that -Ofast -march=native auto-vectorizes,
+# emitting calls to glibc's vector-ABI variants (_ZGVbN4v_expf etc.) which
+# live in libmvec, not libm -- without it, linking any binary that pulls in
+# these code paths fails with "undefined reference to `_ZGV...'".
+LDFLAGS=-lm -lmvec -s
 CSV_OUTPUTS := test.csv train.csv validation.csv
 STAMP       := .split.stamp
 

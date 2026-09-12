@@ -165,6 +165,20 @@ static float activation_function_silu(float a, bool derivative)
 }
 
 // These must be in the same order as the enum activation_function_type
+// Softmax cannot be expressed as this table's per-neuron f(a, derivative):
+// each output depends on every neuron's preact in the layer, not just its
+// own (see forward_propagation()'s dedicated two-pass computation and
+// nn_train()'s fused cross-entropy gradient for the actual math). This
+// entry only exists so the array's length stays in sync with
+// activation_function_type_t; nn_add_layer() restricts
+// ACTIVATION_FUNCTION_TYPE_SOFTMAX to LAYER_TYPE_OUTPUT, whose forward/backward
+// bypass this table for that entry entirely, so it is never actually called.
+static float activation_function_softmax_unreachable(float a, bool derivative)
+{
+  (void)derivative;
+  return a;
+}
+
 static activation_function_t activation_function[] = {
     activation_function_none,
     activation_function_linear,
@@ -177,7 +191,8 @@ static activation_function_t activation_function[] = {
     activation_function_tanh,
     activation_function_tanh_fast,
     activation_function_gelu,
-    activation_function_silu};
+    activation_function_silu,
+    activation_function_softmax_unreachable};
 
 // Computes the error given a cost function
 // The loss function is a basic mean-square error (MSE)
@@ -190,6 +205,20 @@ static float error(float a, float b)
 static float error_derivative(float a, float b)
 {
   return a - b;
+}
+
+// Per-class cross-entropy term -target*log(pred), used instead of error()
+// for the output layer's reported error whenever its activation is softmax
+// (see the comment on ACTIVATION_FUNCTION_TYPE_SOFTMAX in nn.h). `pred` is
+// clamped away from 0 first: softmax can legitimately drive a class's
+// probability arbitrarily close to (but never exactly) 0, and log(0) is
+// -inf, which would turn into a NaN total the moment a target of 0
+// multiplies it (the common case for every non-target class in a one-hot
+// target vector).
+static float cross_entropy_term(float target, float pred)
+{
+  const float eps = 1e-7f;
+  return -target * logf(fmaxf(pred, eps));
 }
 
 // Quantization/dequantization treat each layer as a set of "rows" that share
@@ -470,28 +499,55 @@ static void forward_propagation(nn_t *nn, bool training)
         // vectorized float multiply-add either way.
         {
           const int row_len = (int)nn->width[i - 1]; // flat weight buffer stride for this layer
+          const int width_i = (int)nn->width[i];
+          // First pass: compute every neuron's preact (dot product + bias)
+          // for this layer, same as before. The activation itself is
+          // applied in a second pass below instead of inline here, because
+          // softmax (unlike every other activation) needs every neuron's
+          // preact already computed before it can normalize any one of
+          // them -- see the comment on ACTIVATION_FUNCTION_TYPE_SOFTMAX in nn.h.
           if (nn->quantized) {
-            for (j = 0; j < (int)nn->width[i]; j++) {
+            for (j = 0; j < width_i; j++) {
               sum = 0.0f;
               const int8_t *wrow = nn->weight_quantized[i] + j * row_len;
               for (k = 0; k < row_len; k++) {
                 sum += nn->neuron[i - 1][k] * (float)wrow[k];
               }
-              sum = sum * nn->weight_scale[i][j] + (float)nn->bias_quantized[i][j] * nn->bias_scale[i];
-              nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
-              nn->preact[i][j] = sum;
+              nn->preact[i][j] = sum * nn->weight_scale[i][j] + (float)nn->bias_quantized[i][j] * nn->bias_scale[i];
             }
           } else {
-            for (j = 0; j < (int)nn->width[i]; j++) {
+            for (j = 0; j < width_i; j++) {
               sum = 0.0f;
               const float *wrow = nn->weight[i] + j * row_len;
               for (k = 0; k < row_len; k++) {
                 sum += nn->neuron[i - 1][k] * wrow[k];
               }
-              sum += nn->bias[i][j];
-              nn->neuron[i][j] = activation_function[nn->activation[i]](sum, false);
-              nn->preact[i][j] = sum;
+              nn->preact[i][j] = sum + nn->bias[i][j];
             }
+          }
+          // Second pass: apply the activation. Softmax (only ever valid
+          // here on LAYER_TYPE_OUTPUT -- enforced by nn_add_layer()) is a
+          // numerically-stable whole-layer normalization: subtracting the
+          // layer's max preact before exponentiating changes no ratios
+          // (exp(x-m)/sum(exp(x-m)) == exp(x)/sum(exp(x)) for any constant
+          // m) but keeps the largest exponent at exp(0)=1 instead of
+          // risking expf() overflowing to inf for a large preact.
+          if (nn->activation[i] == ACTIVATION_FUNCTION_TYPE_SOFTMAX) {
+            float maxv = nn->preact[i][0];
+            for (j = 1; j < width_i; j++)
+              if (nn->preact[i][j] > maxv)
+                maxv = nn->preact[i][j];
+            float sumexp = 0.0f;
+            for (j = 0; j < width_i; j++) {
+              float e = expf(nn->preact[i][j] - maxv);
+              nn->neuron[i][j] = e; // temporarily unnormalized; divided through below
+              sumexp += e;
+            }
+            for (j = 0; j < width_i; j++)
+              nn->neuron[i][j] /= sumexp;
+          } else {
+            for (j = 0; j < width_i; j++)
+              nn->neuron[i][j] = activation_function[nn->activation[i]](nn->preact[i][j], false);
           }
         }
         break;
@@ -719,6 +775,14 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       return NN_ERROR_INVALID_CONFIG;
     }
   }
+  // Softmax depends on every neuron's preact in the layer (see the comment
+  // on ACTIVATION_FUNCTION_TYPE_SOFTMAX in nn.h), which forward_propagation()
+  // and nn_train() only handle for LAYER_TYPE_OUTPUT -- reject it elsewhere
+  // rather than silently computing something else.
+  if (activation == ACTIVATION_FUNCTION_TYPE_SOFTMAX && layer_type != LAYER_TYPE_OUTPUT) {
+    fprintf(stderr, "nn_add_layer: SOFTMAX activation is only valid on LAYER_TYPE_OUTPUT (got layer_type=%d)\n", (int)layer_type);
+    return NN_ERROR_UNSUPPORTED_ACTIVATION;
+  }
 
   // Increase depth by one
   nn->depth++;
@@ -904,10 +968,18 @@ float nn_error(nn_t *nn, float *inputs, float *targets)
   // reports a stable, reproducible figure (e.g. for validation/test error)
   // rather than one perturbed by dropout's per-call randomness.
   forward_propagation(nn, false);
-  // Sum MSE on the final (output) layer
+  // Sum error on the final (output) layer: cross-entropy if this network
+  // uses a softmax output (see the comment on ACTIVATION_FUNCTION_TYPE_SOFTMAX
+  // in nn.h -- softmax and MSE are not a matched pair), MSE otherwise.
   i = (int)nn->depth - 1;
-  for (j = 0; j < (int)nn->width[i]; j++) {
-    err += error(targets[j], nn->neuron[i][j]);
+  if (nn->activation[i] == ACTIVATION_FUNCTION_TYPE_SOFTMAX) {
+    for (j = 0; j < (int)nn->width[i]; j++) {
+      err += cross_entropy_term(targets[j], nn->neuron[i][j]);
+    }
+  } else {
+    for (j = 0; j < (int)nn->width[i]; j++) {
+      err += error(targets[j], nn->neuron[i][j]);
+    }
   }
   return err;
 }
@@ -947,8 +1019,15 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   // any DROPOUT layer, which nn_error() always runs as a pass-through).
   i = (int)nn->depth - 1;
   err = 0.0f;
-  for (j = 0; j < (int)nn->width[i]; j++) {
-    err += error(targets[j], nn->neuron[i][j]);
+  const bool softmax_output = (nn->activation[i] == ACTIVATION_FUNCTION_TYPE_SOFTMAX);
+  if (softmax_output) {
+    for (j = 0; j < (int)nn->width[i]; j++) {
+      err += cross_entropy_term(targets[j], nn->neuron[i][j]);
+    }
+  } else {
+    for (j = 0; j < (int)nn->width[i]; j++) {
+      err += error(targets[j], nn->neuron[i][j]);
+    }
   }
   // Perform back propagation using gradient descent, which is an optimization
   // algorithm that follows the negative gradient of the objective function to
@@ -960,8 +1039,21 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   // uniformly represents -dE/d(preact) at every layer -- the propagation
   // step below then never needs to re-derive a layer's own derivative from
   // its neighbor's loss.
-  for (j = 0; j < (int)nn->width[i]; j++) {
-    nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]) * activation_function[nn->activation[i]](nn->preact[i][j], true);
+  if (softmax_output) {
+    // Softmax + cross-entropy: the two Jacobians (softmax's own, and
+    // cross-entropy's derivative w.r.t. softmax's output) cancel into this
+    // simple difference -- see the comment on ACTIVATION_FUNCTION_TYPE_SOFTMAX
+    // in nn.h. There is no separate activation-derivative factor to apply
+    // here (unlike every other activation below): softmax's true derivative
+    // is a full cross-neuron Jacobian, not a per-neuron scalar, so
+    // activation_function[...](preact, true) cannot represent it anyway.
+    for (j = 0; j < (int)nn->width[i]; j++) {
+      nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]);
+    }
+  } else {
+    for (j = 0; j < (int)nn->width[i]; j++) {
+      nn->loss[i][j] = error_derivative(targets[j], nn->neuron[i][j]) * activation_function[nn->activation[i]](nn->preact[i][j], true);
+    }
   }
   // Backpropagate loss into earlier layers
   for (i = nn->depth - 2; i > 0; i--) {

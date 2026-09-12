@@ -13,12 +13,12 @@
 static const char *activation_names[] = {
     "NONE",      "LINEAR",  "RELU",         "LEAKY_RELU", "ELU",
     "THRESHOLD", "SIGMOID", "SIGMOID_FAST", "TANH",       "TANH_FAST",
-    "GELU",      "SILU"};
+    "GELU",      "SILU",    "SOFTMAX"};
 
 static const char *layer_types[] = {
     "NONE",        "FC",         "CNN",        "POOL",       "LSTM",
     "GRU",         "RNN",        "ATTENTION",  "TRANSFORMER", "INPUT",
-    "OUTPUT"};
+    "OUTPUT",      "DROPOUT"};
 
 int main(int argc, char *argv[]) {
   if (argc != 2) {

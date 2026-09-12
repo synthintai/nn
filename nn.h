@@ -54,7 +54,17 @@ typedef enum {
   ACTIVATION_FUNCTION_TYPE_TANH,
   ACTIVATION_FUNCTION_TYPE_TANH_FAST,
   ACTIVATION_FUNCTION_TYPE_GELU,
-  ACTIVATION_FUNCTION_TYPE_SILU
+  ACTIVATION_FUNCTION_TYPE_SILU,
+  // Valid only on LAYER_TYPE_OUTPUT (nn_add_layer() rejects it elsewhere):
+  // unlike every activation above, softmax is not a per-neuron function of
+  // its own preact -- each output depends on every neuron's preact in the
+  // layer -- so forward_propagation() computes it as a dedicated two-pass
+  // whole-layer normalization instead of through the activation_function[]
+  // table, and nn_train()/nn_error() switch to cross-entropy loss for the
+  // output layer's error/gradient (the two are almost always paired: their
+  // combined gradient collapses to a simple `target - prediction`, unlike
+  // softmax paired with any other loss).
+  ACTIVATION_FUNCTION_TYPE_SOFTMAX
 } activation_function_type_t;
 
 typedef enum {

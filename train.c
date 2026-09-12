@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <float.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,7 +14,17 @@
 #include "data_prep.h"
 #include "nn.h"
 
-#define TARGET_VALIDATION_ERROR 0.01
+// A fixed validation-error target doesn't mean much across different loss
+// functions/architectures (e.g. cross-entropy's scale isn't MSE's), and
+// guessing a new magic number every time one of those changes is fragile.
+// Early stopping instead tracks the best validation error seen and stops
+// once it hasn't improved for this many epochs in a row, saving only the
+// best-so-far model (not necessarily the last epoch's, which may already be
+// more overfit) -- self-adjusting to whatever the loss actually is.
+#define EARLY_STOPPING_PATIENCE 5
+// Hard safety cap so training can't run forever even if validation error
+// somehow keeps eking out tiny improvements indefinitely.
+#define MAX_EPOCHS 500
 
 int main(int argc, char *argv[]) {
   if (argc != 2) {
@@ -25,7 +36,19 @@ int main(int argc, char *argv[]) {
   // Tunable hyperparameters
   int num_inputs = 28 * 28;
   int num_outputs = 10;
-  float learning_rate = 0.025f;
+  // Softmax + cross-entropy's output-layer gradient is the raw
+  // target-prediction (see ACTIVATION_FUNCTION_TYPE_SOFTMAX in nn.h) with no
+  // sigmoid-derivative factor (<=0.25x) damping it the way the old
+  // sigmoid+MSE output did -- at the old rate (0.025), that up-to-~4x
+  // larger effective step reliably drove every unit of the second FC layer
+  // negative within the first epoch. Once every unit in a ReLU layer is
+  // simultaneously dead, its derivative is 0 everywhere, permanently
+  // blocking all gradient flow to everything before it -- confirmed via a
+  // diagnostic run showing that layer frozen at 100% dead output from
+  // epoch 0 onward, collapsing training to predicting the class-marginal
+  // (log(10) =~ 2.3, the uniform-over-10-classes cross-entropy, which is
+  // exactly the plateau this used to get stuck at).
+  float learning_rate = 0.005f;
   float annealing = 1.0f;
   // End of tunable parameters
   data_t *train_data;
@@ -54,6 +77,7 @@ int main(int argc, char *argv[]) {
   }
   // Attempt to load an existing model
   nn = nn_load_model((char *)model_path);
+  bool resuming = (nn != NULL);
   if (nn == NULL) {
     printf("Creating new model.\n");
     nn = nn_init();
@@ -72,27 +96,49 @@ int main(int argc, char *argv[]) {
       .out_channels = 8,
       .kernel_size = 5,
       .stride = 1,
-      .padding = 0,
+      .padding = 2,
       .dilation = 1,
       .weight_init = NN_INIT_XAVIER,
       .bias_init = NN_INIT_ZEROS,
     };
     nn_add_layer(nn, LAYER_TYPE_CNN, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (cnn_t *)&cnn);
-    // CNN output is 8 channels of 24x24 (28 - 5 + 1). Pool it down 2x2 -> 8x12x12
-    // before the first fully-connected layer, cutting that FC layer's weight
-    // count 4x (4608*120 -> 1152*120) and improving translation invariance.
+    // "Same" padding ((28 + 2*2 - 5)/1 + 1 == 28) keeps the CNN output at
+    // the full 28x28 instead of shrinking it to 24x24, so the outer couple
+    // of pixels of the digit -- where strokes commonly start/end -- still
+    // get seen by every kernel position instead of being cropped away
+    // before the network looks at them at all. Pool it down 2x2 -> 8x14x14
+    // before the first fully-connected layer (vs. 8x12x12 without padding),
+    // improving translation invariance.
     pool_t pool = {
-      .in_h = 24,
-      .in_w = 24,
+      .in_h = 28,
+      .in_w = 28,
       .channels = 8,
       .pool_size = 2,
       .stride = 2,
       .pooling_type = POOLING_TYPE_MAX,
     };
     nn_add_layer(nn, LAYER_TYPE_POOL, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (pool_t *)&pool);
-    nn_add_layer(nn, LAYER_TYPE_FC, 120, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
-    nn_add_layer(nn, LAYER_TYPE_FC, 20, ACTIVATION_FUNCTION_TYPE_RELU, NULL);
-    nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SIGMOID, NULL);
+    // GELU instead of RELU: smooth and non-monotonic (dips slightly negative
+    // before rising) rather than flat-zero for any negative preact, so a
+    // unit that drifts negative still has a small, nonzero gradient and can
+    // recover instead of dying forever -- directly hardens these layers
+    // against the exact permanently-dead-ReLU collapse diagnosed earlier
+    // (see the learning-rate comment above), on top of whatever accuracy
+    // difference it makes.
+    nn_add_layer(nn, LAYER_TYPE_FC, 120, ACTIVATION_FUNCTION_TYPE_GELU, NULL);
+    // Regularization: the first FC layer (1568*120 weights) has by far the
+    // most capacity in this network, and is the one most free to overfit --
+    // randomly zeroing 30% of its outputs during training (a no-op at
+    // inference, see LAYER_TYPE_DROPOUT's comment in nn.h) keeps the second
+    // FC layer from co-adapting to any one of them too tightly.
+    dropout_t dropout = { .rate = 0.3f };
+    nn_add_layer(nn, LAYER_TYPE_DROPOUT, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (dropout_t *)&dropout);
+    nn_add_layer(nn, LAYER_TYPE_FC, 20, ACTIVATION_FUNCTION_TYPE_GELU, NULL);
+    // Softmax + cross-entropy (the loss nn_train()/nn_error() switch to
+    // automatically for a softmax output -- see ACTIVATION_FUNCTION_TYPE_SOFTMAX
+    // in nn.h) models these 10 digits as mutually exclusive classes, unlike
+    // the 10 independent per-class sigmoids this used before.
+    nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SOFTMAX, NULL);
   } else {
     printf("Using existing model file: %s\n", model_path);
     // Verify that model dimensions match expected inputs/outputs
@@ -105,8 +151,25 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
+  // Establish a validation-error baseline before training: for a resumed
+  // model, this is its current validation error, so early stopping (and
+  // "only save on improvement" below) can't immediately overwrite an
+  // already-good saved model with a worse one just because epoch 1 of this
+  // run happens to land above where the previous run left off. For a brand
+  // new model, there's nothing to beat yet, so +infinity makes the very
+  // first epoch always count as an improvement.
+  float best_validation_error = FLT_MAX;
+  if (resuming) {
+    total_validation_err = 0.0f;
+    for (j = 0; j < validation_data->num_rows; j++) {
+      total_validation_err += nn_error(nn, validation_data->input[j], validation_data->target[j]);
+    }
+    best_validation_error = total_validation_err / (float)validation_data->num_rows;
+    printf("Starting validation error (existing model): %.5f\n", best_validation_error);
+  }
+  int epochs_since_improvement = 0;
   printf("train error, validation error, learning rate\n");
-  while (validation_error > TARGET_VALIDATION_ERROR) {
+  while (epochs < MAX_EPOCHS) {
     // It is critical to shuffle training data before each epoch
     data_shuffle(train_data);
     // Train on each row of training data
@@ -128,13 +191,28 @@ int main(int argc, char *argv[]) {
     epochs++;
     printf("%.5f, %.5f, %.5f\n", train_error, validation_error, learning_rate);
     learning_rate *= annealing;
-    // Save the neural network architecture and weights to the specified file
-    nn_save_model(nn, (char *)model_path);
+    if (validation_error < best_validation_error) {
+      best_validation_error = validation_error;
+      epochs_since_improvement = 0;
+      // Only persist the best-so-far model, not every epoch's -- a later
+      // epoch may already be more overfit (see the training-log discussion
+      // that motivated early stopping) despite training error still
+      // falling.
+      nn_save_model(nn, (char *)model_path);
+    } else {
+      epochs_since_improvement++;
+      if (epochs_since_improvement >= EARLY_STOPPING_PATIENCE) {
+        printf("No validation improvement for %d epochs (best: %.5f) -- stopping early.\n",
+               EARLY_STOPPING_PATIENCE, best_validation_error);
+        break;
+      }
+    }
   }
   data_free(validation_data);
   data_free(train_data);
   nn_free(nn);
-  printf("Final train error: %f\n", train_error);
+  printf("Final (last epoch) train error: %f, validation error: %f\n", train_error, validation_error);
+  printf("Best validation error (the model saved to disk): %f\n", best_validation_error);
   printf("Training epochs: %d\n", epochs);
   return 0;
 }

@@ -44,6 +44,7 @@ With this library, neural networks of any width and depth may be constructed and
 * TanH
 * GELU
 * SiLU
+* Softmax (output layer only -- paired automatically with cross-entropy loss; see `ACTIVATION_FUNCTION_TYPE_SOFTMAX` in nn.h)
 
 Different activation functions may be assigned to each layer in the network.
 
@@ -153,7 +154,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
 * Add Recurrent Neural Network Layer (RNN) layer type
-* Implement softmax layer
 * Run cppcheck and fix all errors and warnings from static analysis
 * Add Long Short-Term Memory (LSTM) layer type
 * Add Gated Recurrent Unit (GRU) layer type

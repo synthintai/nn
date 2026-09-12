@@ -50,6 +50,17 @@ Different activation functions may be assigned to each layer in the network.
 
 A bias can be added to each layer independently.
 
+The following layer types are supported (added one at a time, in order, via `nn_add_layer()`):
+
+* **Input** - holds the network's input values; has no weights, bias, or activation of its own.
+* **Fully Connected (FC)** - every neuron connects to every neuron in the previous layer; the standard building block for dense layers.
+* **Convolutional (CNN)** - 2D convolution over the previous layer's feature maps, with configurable kernel size, stride, padding (same/zero-padding), and channel counts (see `cnn_t` in nn.h).
+* **Pooling** - downsamples a CNN layer's feature maps; Min, Max, or Average (see `pooling_type_t` in nn.h).
+* **Dropout** - training-only regularization that randomly zeroes a configurable fraction of a layer's outputs each step; a no-op pass-through at inference (see `dropout_t` in nn.h).
+* **Output** - the network's final layer; computed the same way as Fully Connected, with support for Softmax (see Features above) in addition to the other activation functions.
+
+LSTM, GRU, RNN, Attention, and Transformer layer types are declared in `layer_type_t` but not yet implemented (see TODO below).
+
 ## Instructions
 
 To build the nn library and sample training and prediction programs, just type:
@@ -160,9 +171,7 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
 * Add Recurrent Neural Network Layer (RNN) layer type
-* Run cppcheck and fix all errors and warnings from static analysis
 * Add Long Short-Term Memory (LSTM) layer type
 * Add Gated Recurrent Unit (GRU) layer type
 * Add Attention layer type

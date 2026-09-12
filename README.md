@@ -121,9 +121,13 @@ For targets with no filesystem, `nn_load_model_memory(data, size)` parses that s
 
 * **Inplace** - a third format (magic `NNP1`), written by `nn_save_model_inplace()` and read back with zero copy by `nn_load_model_inplace(data, size)`: instead of parsing weights/biases into freshly malloc'd RAM, the returned model's weight (or weight_quantized) and bias (or bias_quantized) arrays point directly into the caller's buffer. This is the format for microcontroller targets where RAM, not flash, is the tight resource -- the buffer (typically a `static const uint8_t[]` baked into flash) must stay valid for as long as the model is used, and the model it produces is read-only: `nn_train()`, `nn_quantize()`, `nn_dequantize()`, `nn_remove_neuron()`, and `nn_prune_lightest_neuron()` all refuse to run against it. Use `nn_predict()`/`nn_error()` for inference as usual, and release it with `nn_free()` as usual -- it knows not to free the aliased buffers.
 
+## Integration
+
+To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference. For microcontroller-class inference-only use, nn_load_model_inplace() (see Model File Format above) is the intended entry point: it runs inference directly out of a flash-resident model with no RAM copy of the weights; `nn_load_model_memory()` is the fallback when the model instead needs to be copied into (and is free to be modified/replaced in) RAM.
+
 ### Embedding an inplace model as a C header
 
-To bake an inplace-format model into firmware as a flash-resident array, convert the file `nn_save_model_inplace()` wrote with [`xxd -i`](https://linux.die.net/man/1/xxd):
+To integrate an inplace-format model into firmware as a flash-resident array, convert the file `nn_save_model_inplace()` wrote with [`xxd -i`](https://linux.die.net/man/1/xxd):
 
 ```
 xxd -i model_inplace.bin > model_inplace.h
@@ -139,10 +143,6 @@ nn_t *nn = nn_load_model_inplace(model_inplace_bin, model_inplace_bin_len);
 
 `xxd -i` doesn't add an alignment attribute, so on a toolchain/linker that doesn't already place `.rodata` arrays 4-byte aligned, add one by hand to the generated declaration (`unsigned char model_inplace_bin[] __attribute__((aligned(4))) = {...};`) -- `nn_load_model_inplace()` requires 4-byte alignment (see its comment in nn.c).
 
-## Integration
-
-To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference. For microcontroller-class inference-only use, nn_load_model_inplace() (see Model File Format above) is the intended entry point: it runs inference directly out of a flash-resident model with no RAM copy of the weights; `nn_load_model_memory()` is the fallback when the model instead needs to be copied into (and is free to be modified/replaced in) RAM.
-
 ## License
 
 Copyright (c) 2019-2026 SynthInt Technologies, LLC. All rights reserved.
@@ -151,7 +151,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Add dropout layer type
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
 * Add RNN feature
 * Implement softmax layer

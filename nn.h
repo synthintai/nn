@@ -68,7 +68,8 @@ typedef enum {
   LAYER_TYPE_ATTENTION,  // Attention Layer - Not yet implemented
   LAYER_TYPE_TRANSFORMER,// Transformer Layer - Not yet implemented
   LAYER_TYPE_INPUT,      // Input Layer
-  LAYER_TYPE_OUTPUT      // Output Layer
+  LAYER_TYPE_OUTPUT,     // Output Layer
+  LAYER_TYPE_DROPOUT     // Dropout Layer (training-only regularization; a no-op pass-through at inference)
 } layer_type_t;
 
 typedef enum {
@@ -114,6 +115,17 @@ typedef struct {
 } pool_t;
 
 typedef struct {
+  // Probability, in [0, 1), of dropping (zeroing) each unit during training.
+  // Width is derived automatically from the previous layer (a DROPOUT layer
+  // is a same-width pass-through) -- the `width` argument passed to
+  // nn_add_layer() for a DROPOUT layer is ignored, same as for CNN/POOL.
+  // Like a POOL layer, a DROPOUT layer has no activation function of its
+  // own: add it with ACTIVATION_FUNCTION_TYPE_LINEAR (see nn_dropout_forward()
+  // in nn.c).
+  float rate;
+} dropout_t;
+
+typedef struct {
   bool quantized;         // Indicates if the network is quantized
   uint8_t version_major;  // Major version of the network model
   uint8_t version_minor;  // Minor version of the network model
@@ -143,6 +155,15 @@ typedef struct {
   float **bias;           // Bias for each neuron
   int8_t **bias_quantized;// Quantized bias for each neuron
   int **pool_argmax;      // Per POOL-MAX/MIN layer: winning input index for each output neuron (NULL otherwise)
+  // Per DROPOUT layer only (NULL otherwise): the per-neuron scale applied to
+  // that neuron by the most recent training forward pass -- either 0.0f (this
+  // neuron was dropped) or 1/(1-rate) (kept, inverted-dropout scaling).
+  // Written by nn_dropout_forward() and consumed by nn_dropout_backward() to
+  // route the same per-neuron scaling through the gradient; both are only
+  // exercised in training mode (see forward_propagation()'s `training` flag
+  // in nn.c) -- at inference a DROPOUT layer is a pure pass-through and this
+  // is never populated or read.
+  float **dropout_scale;
   // True only for a model returned by nn_load_model_inplace(): weight,
   // weight_quantized, weight_scale, and bias/bias_quantized then point
   // directly into the caller's (read-only, e.g. flash-resident) buffer

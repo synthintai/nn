@@ -393,7 +393,67 @@ static void nn_conv_backward(nn_t *nn, int layer, float *grad_in)
   }
 }
 
-static void forward_propagation(nn_t *nn)
+// Dropout layer forward pass: a same-width pass-through of the previous
+// layer's output. At inference (training == false) every unit simply
+// passes through unchanged. During training, each unit is independently
+// zeroed with probability `rate` (nn->config[layer]->rate); a surviving
+// unit is scaled by 1/(1-rate) ("inverted dropout", the standard
+// convention -- it keeps the expected output magnitude the same as at
+// inference, so nothing needs adjusting when dropout is later turned off).
+// The per-neuron scale actually applied (0 or 1/(1-rate)) is cached in
+// nn->dropout_scale[layer] for nn_dropout_backward() to reuse.
+// Like nn_pool_forward(), preact[layer] simply mirrors neuron[layer]
+// (dropout has no activation function of its own) -- add a DROPOUT layer
+// with ACTIVATION_FUNCTION_TYPE_LINEAR so the generic activation-derivative
+// machinery in nn_train() is a no-op.
+static void nn_dropout_forward(nn_t *nn, int layer, bool training)
+{
+  const int width = (int)nn->width[layer];
+  const float *in = nn->neuron[layer - 1];
+  float *out = nn->neuron[layer];
+  float *pre = nn->preact[layer];
+
+  if (!training) {
+    memcpy(out, in, (size_t)width * sizeof(float));
+    memcpy(pre, in, (size_t)width * sizeof(float));
+    return;
+  }
+  dropout_t *dropout = nn->config[layer];
+  const float rate = dropout->rate;
+  const float inv_keep = 1.0f / (1.0f - rate); // rate < 1 is enforced by nn_add_layer()
+  float *scale = nn->dropout_scale[layer];
+  for (int j = 0; j < width; ++j) {
+    const bool keep = (rand() / (float)RAND_MAX) >= rate;
+    scale[j] = keep ? inv_keep : 0.0f;
+    out[j] = in[j] * scale[j];
+    pre[j] = out[j];
+  }
+}
+
+// Routes a dropout layer's loss (dE/d(preact), already computed in
+// nn->loss[layer]) back into grad_in, which must be zeroed by the caller and
+// sized to the dropout layer's input width (same contract as
+// nn_pool_backward()/nn_conv_backward() above). Since dropout is an
+// elementwise, same-width pass-through, this simply re-applies the same
+// per-neuron scale nn_dropout_forward() cached for this forward pass: a
+// dropped unit (scale 0) blocks its gradient entirely, and a surviving unit
+// passes its gradient through scaled by 1/(1-rate), consistent with the
+// forward multiply.
+static void nn_dropout_backward(nn_t *nn, int layer, float *grad_in)
+{
+  const int width = (int)nn->width[layer];
+  const float *loss = nn->loss[layer];
+  const float *scale = nn->dropout_scale[layer];
+  for (int j = 0; j < width; ++j)
+    grad_in[j] += loss[j] * scale[j];
+}
+
+// `training` selects DROPOUT layer behavior: true (only from nn_train())
+// randomly zeroes units (inverted-dropout scaling on the survivors) and
+// caches the per-neuron scale used in nn->dropout_scale for the backward
+// pass; false (from nn_predict()/nn_error()) makes every DROPOUT layer a
+// pure pass-through, as is standard at inference.
+static void forward_propagation(nn_t *nn, bool training)
 {
   float sum;
   int i, j, k;
@@ -442,6 +502,10 @@ static void forward_propagation(nn_t *nn)
       case LAYER_TYPE_POOL:
         // Pooling Layer
         nn_pool_forward(nn, i);
+        break;
+      case LAYER_TYPE_DROPOUT:
+        // Dropout Layer
+        nn_dropout_forward(nn, i, training);
         break;
       case LAYER_TYPE_LSTM:
         // Long Short-Term Memory Layer
@@ -512,6 +576,7 @@ nn_t *nn_init(void)
   nn->bias_quantized = NULL;
   nn->bias_scale = NULL;
   nn->pool_argmax = NULL;
+  nn->dropout_scale = NULL;
   nn->immutable = false;
   return nn;
 }
@@ -594,6 +659,13 @@ void nn_free(nn_t *nn)
       free(nn->pool_argmax[layer]);
     free(nn->pool_argmax);
   }
+  // Free the dropout per-neuron scale cache (independent of quantized state,
+  // same as pool_argmax above)
+  if (nn->dropout_scale) {
+    for (int layer = 1; layer < (int)nn->depth; layer++)
+      free(nn->dropout_scale[layer]);
+    free(nn->dropout_scale);
+  }
   free(nn);
 }
 
@@ -629,6 +701,23 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
               cnn_check->in_h, cnn_check->in_w, cnn_check->kernel_size, cnn_check->padding);
       return NN_ERROR_INVALID_CONFIG;
     }
+  } else if (layer_type == LAYER_TYPE_DROPOUT) {
+    if (config == NULL) {
+      return NN_ERROR_INVALID_CONFIG;
+    }
+    dropout_t *dropout_check = (dropout_t *)config;
+    // rate == 1 would mean every unit is always dropped, making the
+    // inverted-dropout scale 1/(1-rate) divide by zero.
+    if (!(dropout_check->rate >= 0.0f) || !(dropout_check->rate < 1.0f)) {
+      fprintf(stderr, "nn_add_layer: DROPOUT rate must be in [0, 1) (got %g)\n", (double)dropout_check->rate);
+      return NN_ERROR_INVALID_CONFIG;
+    }
+    // A DROPOUT layer's width is derived from the previous layer (it's a
+    // same-width pass-through), so it cannot be the very first layer added.
+    if (nn->depth == 0) {
+      fprintf(stderr, "nn_add_layer: DROPOUT cannot be the first layer (no previous layer to derive its width from)\n");
+      return NN_ERROR_INVALID_CONFIG;
+    }
   }
 
   // Increase depth by one
@@ -657,6 +746,10 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
     out_w = ((pool->in_w - pool->pool_size) / pool->stride) + 1;
     out_h = ((pool->in_h - pool->pool_size) / pool->stride) + 1;
     nn->width[nn->depth - 1] = pool->channels * out_w * out_h;
+  } else if (layer_type == LAYER_TYPE_DROPOUT) {
+    // Pass-through: same width as the previous layer. nn->depth was already
+    // validated to be >= 1 (pre-increment) above, so nn->depth - 2 >= 0 here.
+    nn->width[nn->depth - 1] = nn->width[nn->depth - 2];
   }
   nn->activation = (uint8_t *)realloc(nn->activation, nn->depth * sizeof(*nn->activation));
   if (nn->activation == NULL)
@@ -685,6 +778,13 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
     // Cache the output dims for the same reason as the CNN case above.
     ((pool_t *)nn->config[nn->depth - 1])->out_w = (uint16_t)out_w;
     ((pool_t *)nn->config[nn->depth - 1])->out_h = (uint16_t)out_h;
+  } else if (layer_type == LAYER_TYPE_DROPOUT) {
+    nn->config[nn->depth - 1] = (void *)malloc(sizeof(dropout_t));
+    if (nn->config[nn->depth - 1] == NULL)
+      return NN_ERROR_OUT_OF_MEMORY;
+    // Copy the dropout configuration (no output dims to cache -- width was
+    // already derived directly from the previous layer above).
+    memcpy(nn->config[nn->depth - 1], config, sizeof(dropout_t));
   }
   nn->neuron = (float **)realloc(nn->neuron, nn->depth * sizeof(float *));
   if (nn->neuron == NULL)
@@ -714,6 +814,10 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
   if (nn->pool_argmax == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
   nn->pool_argmax[nn->depth - 1] = NULL;
+  nn->dropout_scale = (float **)realloc(nn->dropout_scale, (nn->depth) * sizeof(float *));
+  if (nn->dropout_scale == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->dropout_scale[nn->depth - 1] = NULL;
   // For layer 0, we do not allocate neuron/loss/preact (input is provided externally)
   if (nn->depth > 1) {
     nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
@@ -725,17 +829,29 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
     nn->preact[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
     if (nn->preact[nn->depth - 1] == NULL)
       return NN_ERROR_OUT_OF_MEMORY;
-    if (layer_type == LAYER_TYPE_POOL) {
-      // Pooling has no learnable parameters
+    if (layer_type == LAYER_TYPE_POOL || layer_type == LAYER_TYPE_DROPOUT) {
+      // Pooling and dropout both have no learnable parameters
       nn->weight[nn->depth - 1] = NULL;
       nn->weight_adj[nn->depth - 1] = NULL;
       nn->weight_scale[nn->depth - 1] = NULL;
       nn->bias[nn->depth - 1] = NULL;
-      // MIN/MAX pooling need to remember which input position "won" each
-      // output, so backprop can route the gradient to only that position.
-      if (pool->pooling_type == POOLING_TYPE_MAX || pool->pooling_type == POOLING_TYPE_MIN) {
-        nn->pool_argmax[nn->depth - 1] = (int *)malloc(nn->width[nn->depth - 1] * sizeof(int));
-        if (nn->pool_argmax[nn->depth - 1] == NULL)
+      if (layer_type == LAYER_TYPE_POOL) {
+        // MIN/MAX pooling need to remember which input position "won" each
+        // output, so backprop can route the gradient to only that position.
+        if (pool->pooling_type == POOLING_TYPE_MAX || pool->pooling_type == POOLING_TYPE_MIN) {
+          nn->pool_argmax[nn->depth - 1] = (int *)malloc(nn->width[nn->depth - 1] * sizeof(int));
+          if (nn->pool_argmax[nn->depth - 1] == NULL)
+            return NN_ERROR_OUT_OF_MEMORY;
+        }
+      } else {
+        // DROPOUT: nn_dropout_forward() fills this in on every training
+        // forward pass with the per-neuron scale it applied (0 or
+        // 1/(1-rate)), so nn_dropout_backward() can route the gradient the
+        // same way. Allocated here (not lazily) so a later OOM can't happen
+        // mid-training; unused (never populated or read) for a model that's
+        // only ever run through nn_predict()/nn_error().
+        nn->dropout_scale[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
+        if (nn->dropout_scale[nn->depth - 1] == NULL)
           return NN_ERROR_OUT_OF_MEMORY;
       }
     } else {
@@ -784,7 +900,10 @@ float nn_error(nn_t *nn, float *inputs, float *targets)
 
   // Layer 0's neuron pointers simply reference the input array
   nn->neuron[0] = inputs;
-  forward_propagation(nn);
+  // training=false: any DROPOUT layer is a pass-through here, so nn_error()
+  // reports a stable, reproducible figure (e.g. for validation/test error)
+  // rather than one perturbed by dropout's per-call randomness.
+  forward_propagation(nn, false);
   // Sum MSE on the final (output) layer
   i = (int)nn->depth - 1;
   for (j = 0; j < (int)nn->width[i]; j++) {
@@ -816,13 +935,16 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
     nn_dequantize(nn);
   }
   nn->neuron[0] = inputs;
-  forward_propagation(nn);
+  // training=true: any DROPOUT layer actually drops/scales units here (see
+  // forward_propagation()).
+  forward_propagation(nn, true);
   // Capture this sample's pre-update error now, while neuron[] still reflects
   // the forward pass above. This is the conventional "training loss" and lets
   // us avoid a second, redundant forward_propagation() call at the end of
   // this function (nn->neuron[] is not touched again until the next forward
   // pass, so this is equivalent to what a trailing nn_error() call would have
-  // computed from the pre-update weights).
+  // computed from the pre-update weights -- except for the contribution of
+  // any DROPOUT layer, which nn_error() always runs as a pass-through).
   i = (int)nn->depth - 1;
   err = 0.0f;
   for (j = 0; j < (int)nn->width[i]; j++) {
@@ -864,6 +986,16 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       for (j = 0; j < (int)nn->width[i]; j++) {
         nn->loss[i][j] *= activation_function[nn->activation[i]](nn->preact[i][j], true);
       }
+    } else if (nn->layer_type[i + 1] == LAYER_TYPE_DROPOUT) {
+      // Same idea again: a DROPOUT layer has no weight matrix (it's a
+      // same-width pass-through), so the generic weighted-sum formula below
+      // does not apply -- route through nn_dropout_backward() instead,
+      // which re-applies the same per-neuron scale the forward pass used.
+      memset(nn->loss[i], 0, nn->width[i] * sizeof(float));
+      nn_dropout_backward(nn, i + 1, nn->loss[i]);
+      for (j = 0; j < (int)nn->width[i]; j++) {
+        nn->loss[i][j] *= activation_function[nn->activation[i]](nn->preact[i][j], true);
+      }
     } else {
       // Layer i+1's flat weight buffer has a row per its own neuron, each
       // row_len = width[i] wide (its previous layer's width, i.e. ours).
@@ -898,8 +1030,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
           db += nn->loss[i][j * plane + k];
         nn->bias[i][j] += db * rate;
       }
-    } else if (nn->layer_type[i] == LAYER_TYPE_POOL) {
-      // Pooling has no bias
+    } else if (nn->layer_type[i] == LAYER_TYPE_POOL || nn->layer_type[i] == LAYER_TYPE_DROPOUT) {
+      // Pooling and dropout both have no bias
     } else {
         // FC / output layers
         for (j = 0; j < (int)nn->width[i]; j++)
@@ -952,8 +1084,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
           }
         }
       }
-    } else if (nn->layer_type[i] == LAYER_TYPE_POOL) {
-      // Pooling has no weights
+    } else if (nn->layer_type[i] == LAYER_TYPE_POOL || nn->layer_type[i] == LAYER_TYPE_DROPOUT) {
+      // Pooling and dropout both have no weights
     } else {
       // FC / output layers
       const int row_len = (int)nn->width[i - 1];
@@ -971,8 +1103,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       int total = kernels * k_elems;
       for (int idx = 0; idx < total; ++idx)
         nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
-    } else if (nn->layer_type[i] == LAYER_TYPE_POOL) {
-      // Pooling has no weights
+    } else if (nn->layer_type[i] == LAYER_TYPE_POOL || nn->layer_type[i] == LAYER_TYPE_DROPOUT) {
+      // Pooling and dropout both have no weights
     } else {
       // FC / output layers
       int total = (int)nn->width[i] * (int)nn->width[i - 1];
@@ -988,7 +1120,8 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
 float *nn_predict(nn_t *nn, float *inputs)
 {
   nn->neuron[0] = inputs;
-  forward_propagation(nn);
+  // training=false: any DROPOUT layer is a pass-through at inference.
+  forward_propagation(nn, false);
   // Return the output layer
   return nn->neuron[nn->depth - 1];
 }
@@ -1041,6 +1174,7 @@ nn_t *nn_load_model_ascii(const char *path)
     }
     cnn_t ctmp;
     pool_t ptmp;
+    dropout_t dtmp;
     void *cptr = NULL;
     if (layer_type == LAYER_TYPE_CNN) {
       if (fscanf(file, " %hu %hu %hhu %hhu %hhu %hhu %hhu %hhu", &ctmp.in_h, &ctmp.in_w, &ctmp.in_channels, &ctmp.out_channels, &ctmp.kernel_size, &ctmp.stride, &ctmp.padding, &ctmp.dilation) != 8) {
@@ -1060,6 +1194,15 @@ nn_t *nn_load_model_ascii(const char *path)
       }
       ptmp.pooling_type = (pooling_type_t)pt;
       cptr = &ptmp;
+      // nn_add_layer will recompute width
+      w = 0;
+    } else if (layer_type == LAYER_TYPE_DROPOUT) {
+      if (fscanf(file, " %f", &dtmp.rate) != 1) {
+        fclose(file);
+        nn_free(nn);
+        return NULL;
+      }
+      cptr = &dtmp;
       // nn_add_layer will recompute width
       w = 0;
     }
@@ -1104,8 +1247,8 @@ nn_t *nn_load_model_ascii(const char *path)
           if (fscanf(file, "%f\n", &nn->bias[layer][oc]) != 1)
             goto cleanup_float;
         }
-      } else if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
-        // Pooling has no weights/bias beyond the placeholder line already consumed above
+      } else if (nn->layer_type[layer] == LAYER_TYPE_POOL || nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
+        // Pooling and dropout both have no weights/bias beyond the placeholder line already consumed above
       } else {
         // Fully-connected / output layer
         int row_len = (int)nn->width[layer - 1];
@@ -1172,8 +1315,8 @@ nn_t *nn_load_model_ascii(const char *path)
   // every layer's fields are either NULL or one single valid allocation.
   int layer = 0;
   for (layer = 1; layer < nn->depth; layer++) {
-    if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
-      // Pooling has no weights/bias to read
+    if (nn->layer_type[layer] == LAYER_TYPE_POOL || nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
+      // Pooling and dropout both have no weights/bias to read
       nn->weight_quantized[layer] = NULL;
       nn->weight_scale[layer] = NULL;
       nn->bias_quantized[layer] = NULL;
@@ -1362,6 +1505,7 @@ static nn_t *nn_load_model_binary_impl(nn_reader_t *r)
       goto fail;
     cnn_t ctmp;
     pool_t ptmp;
+    dropout_t dtmp;
     void *cptr = NULL;
     if (layer_type == LAYER_TYPE_CNN) {
       if (!nn_reader_read(r, &ctmp, sizeof(ctmp)))
@@ -1371,6 +1515,10 @@ static nn_t *nn_load_model_binary_impl(nn_reader_t *r)
       if (!nn_reader_read(r, &ptmp, sizeof(ptmp)))
         goto fail;
       cptr = &ptmp; w = 0;
+    } else if (layer_type == LAYER_TYPE_DROPOUT) {
+      if (!nn_reader_read(r, &dtmp, sizeof(dtmp)))
+        goto fail;
+      cptr = &dtmp; w = 0;
     }
     if (nn_add_layer(nn, layer_type, (int)w, (int)a, cptr) != 0)
      goto fail;
@@ -1400,8 +1548,8 @@ static nn_t *nn_load_model_binary_impl(nn_reader_t *r)
         // One bias per output channel
         if (!nn_reader_read(r, nn->bias[L], sizeof(float) * (size_t)c->out_channels))
           goto fail;
-      } else if (nn->layer_type[L] == LAYER_TYPE_POOL) {
-        // Pooling has no weights/bias beyond the placeholder read above
+      } else if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
+        // Pooling and dropout both have no weights/bias beyond the placeholder read above
       } else {
         uint32_t curr = nn->width[L], prev = nn->width[L - 1];
         for (uint32_t i = 0; i < curr; i++) {
@@ -1456,8 +1604,8 @@ static nn_t *nn_load_model_binary_impl(nn_reader_t *r)
     nn->bias_scale[0] = 0.0f;
     // Read per-layer quant data
     for (int L = 1; L < (int)depth; L++) {
-      if (nn->layer_type[L] == LAYER_TYPE_POOL) {
-        // Pooling has no weights/bias to read (already NULL from the memsets above)
+      if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
+        // Pooling and dropout both have no weights/bias to read (already NULL from the memsets above)
         nn->bias_scale[L] = 0.0f;
         continue;
       }
@@ -1563,7 +1711,9 @@ static bool nn_write_padded(FILE *file, const void *data, size_t n)
 //     uint32_t activation
 //     cnn_t config            (only if layer_type == LAYER_TYPE_CNN)
 //     pool_t config           (only if layer_type == LAYER_TYPE_POOL)
-//   -- per layer L in [1, depth), skipped entirely for LAYER_TYPE_POOL: --
+//     dropout_t config        (only if layer_type == LAYER_TYPE_DROPOUT)
+//   -- per layer L in [1, depth), skipped entirely for LAYER_TYPE_POOL and
+//      LAYER_TYPE_DROPOUT (neither has weights/bias): --
 //     if quantized:
 //       float weight_scale[rows]
 //       int8_t weight_quantized[rows * row_len]
@@ -1604,10 +1754,13 @@ nn_error_t nn_save_model_inplace(nn_t *nn, const char *path)
     } else if (layer_type == LAYER_TYPE_POOL) {
       if (!nn_write_padded(file, nn->config[i], sizeof(pool_t)))
         goto fail;
+    } else if (layer_type == LAYER_TYPE_DROPOUT) {
+      if (!nn_write_padded(file, nn->config[i], sizeof(dropout_t)))
+        goto fail;
     }
   }
   for (uint32_t L = 1; L < depth; L++) {
-    if (nn->layer_type[L] == LAYER_TYPE_POOL)
+    if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT)
       continue;
     int rows, row_len, bias_count;
     quantized_layer_shape(nn, (int)L, &rows, &row_len, &bias_count);
@@ -1692,6 +1845,7 @@ nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
   nn->weight_quantized = NULL; nn->weight_scale = NULL;
   nn->bias_quantized = NULL; nn->bias_scale = NULL;
   nn->pool_argmax = NULL;
+  nn->dropout_scale = NULL;
 
   // Allocate every top-level array up front, all sized to `depth` and
   // zeroed, before touching nn->depth: nn_free() indexes every layer <
@@ -1716,8 +1870,13 @@ nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
   nn->weight_scale = (float **)calloc(depth, sizeof(*nn->weight_scale));
   nn->bias_scale = (float *)calloc(depth, sizeof(*nn->bias_scale));
   nn->pool_argmax = (int **)calloc(depth, sizeof(*nn->pool_argmax));
+  // dropout_scale is training-only scratch (see its field comment in nn.h)
+  // that an inplace-loaded (inference-only) model never populates or reads;
+  // still allocated (all-NULL) so nn_free() can safely iterate it uniformly.
+  nn->dropout_scale = (float **)calloc(depth, sizeof(*nn->dropout_scale));
   bool top_level_ok = nn->layer_type && nn->width && nn->activation && nn->config &&
-      nn->neuron && nn->loss && nn->preact && nn->weight_scale && nn->bias_scale && nn->pool_argmax;
+      nn->neuron && nn->loss && nn->preact && nn->weight_scale && nn->bias_scale &&
+      nn->pool_argmax && nn->dropout_scale;
   if (nn->quantized) {
     nn->weight_quantized = (int8_t **)calloc(depth, sizeof(*nn->weight_quantized));
     nn->bias_quantized = (int8_t **)calloc(depth, sizeof(*nn->bias_quantized));
@@ -1760,22 +1919,30 @@ nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
         goto fail;
       }
       nn->config[i] = p;
+    } else if (layer_type == LAYER_TYPE_DROPOUT) {
+      dropout_t *d = (dropout_t *)malloc(sizeof(dropout_t));
+      if (!d || !nn_reader_read_padded(&r, d, sizeof(dropout_t))) {
+        free(d);
+        goto fail;
+      }
+      nn->config[i] = d;
     }
   }
 
   // Per-layer activation buffers (owned, small) and weight/bias data (for
-  // everything but LAYER_TYPE_POOL, which has neither): aliased directly
-  // into `data` -- this loop never calls malloc() for weight/weight_quantized/
-  // weight_scale/bias/bias_quantized.
+  // everything but LAYER_TYPE_POOL/LAYER_TYPE_DROPOUT, which have neither):
+  // aliased directly into `data` -- this loop never calls malloc() for
+  // weight/weight_quantized/weight_scale/bias/bias_quantized.
   for (uint32_t L = 1; L < depth; L++) {
     nn->neuron[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
     nn->preact[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
     if (!nn->neuron[L] || !nn->preact[L])
       goto fail;
-    // loss[L] and pool_argmax[L] stay NULL: nn_predict()/nn_error() (the
-    // only operations a read-only model supports) never touch them -- only
-    // backprop would, and that's refused via immutable above.
-    if (nn->layer_type[L] == LAYER_TYPE_POOL)
+    // loss[L], pool_argmax[L], and dropout_scale[L] stay NULL: nn_predict()/
+    // nn_error() (the only operations a read-only model supports) never
+    // touch them -- only backprop would, and that's refused via immutable
+    // above.
+    if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT)
       continue;
     int rows, row_len, bias_count;
     quantized_layer_shape(nn, (int)L, &rows, &row_len, &bias_count);
@@ -1831,6 +1998,9 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
     } else if (nn->layer_type[i] == LAYER_TYPE_POOL) {
       pool_t *p = nn->config[i];
       fprintf(file, " %d %d %d %d %d %d", p->in_h, p->in_w, p->channels, p->pool_size, p->stride, (int)p->pooling_type);
+    } else if (nn->layer_type[i] == LAYER_TYPE_DROPOUT) {
+      dropout_t *d = nn->config[i];
+      fprintf(file, " %g", (double)d->rate);
     }
     fputc('\n', file);
   }
@@ -1855,8 +2025,8 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
         }
         for (int oc = 0; oc < c->out_channels; ++oc)
           fprintf(file, "%f\n", nn->bias[layer][oc]);
-      } else if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
-        // Pooling has no weights/bias beyond the placeholder line already written above
+      } else if (nn->layer_type[layer] == LAYER_TYPE_POOL || nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
+        // Pooling and dropout both have no weights/bias beyond the placeholder line already written above
       } else {
         // FC / output
         int row_len = (int)nn->width[layer - 1];
@@ -1873,8 +2043,8 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
   } else {
     // Quantized mode: write weight_scale, quantized weights, bias_scale, quantized bias
     for (int layer = 1; layer < (int)nn->depth; layer++) {
-      if (nn->layer_type[layer] == LAYER_TYPE_POOL) {
-        // Pooling has no weights/bias to write
+      if (nn->layer_type[layer] == LAYER_TYPE_POOL || nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
+        // Pooling and dropout both have no weights/bias to write
         continue;
       }
       int rows, row_len, bias_count;
@@ -1929,6 +2099,9 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
     } else if (layer_type == LAYER_TYPE_POOL) {
       pool_t *p = nn->config[i];
       fwrite(p, sizeof(pool_t), 1, file);
+    } else if (layer_type == LAYER_TYPE_DROPOUT) {
+      dropout_t *d = nn->config[i];
+      fwrite(d, sizeof(dropout_t), 1, file);
     }
   }
   // Weights & biases
@@ -1947,8 +2120,8 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
           fwrite(nn->weight[L] + k * k_elems, sizeof(float), k_elems, file);
         }
         fwrite(nn->bias[L], sizeof(float), c->out_channels, file);
-      } else if (nn->layer_type[L] == LAYER_TYPE_POOL) {
-        // Pooling has no weights/bias beyond the placeholder written above
+      } else if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
+        // Pooling and dropout both have no weights/bias beyond the placeholder written above
       } else {
         uint32_t curr = nn->width[L], prev = nn->width[L - 1];
         for (uint32_t i = 0; i < curr; i++) {
@@ -1962,8 +2135,8 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
   } else {
     // Quantized mode: real scales and int8 quantized data
     for (uint32_t L = 1; L < depth; L++) {
-      if (nn->layer_type[L] == LAYER_TYPE_POOL) {
-        // Pooling has no weights/bias to write
+      if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
+        // Pooling and dropout both have no weights/bias to write
         continue;
       }
       int rows, row_len, bias_count;
@@ -2028,11 +2201,21 @@ nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   // no well-defined way to "remove one neuron" from it without corrupting
   // the layer's structural computation. Likewise, if the NEXT layer is
   // CNN/POOL, its weight array has no per-input-neuron column to shrink.
-  if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL) {
+  // DROPOUT is neuron-indexed (same width as its input, 1:1), so it doesn't
+  // have that structural problem, but it introduces a different one: this
+  // function only ever adjusts the ONE layer immediately after `layer`
+  // (shrinking its input-column count to match). A DROPOUT layer has no
+  // weight matrix of its own to shrink, so removing a neuron *through* it
+  // would need to cascade the adjustment one hop further, to whatever comes
+  // after the DROPOUT layer -- not implemented, so it's rejected the same
+  // way CNN/POOL are, for a different reason.
+  if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
+      nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
     return NN_ERROR_UNSUPPORTED_LAYER;
   }
   if (layer + 1 < (int)nn->depth &&
-      (nn->layer_type[layer + 1] == LAYER_TYPE_CNN || nn->layer_type[layer + 1] == LAYER_TYPE_POOL)) {
+      (nn->layer_type[layer + 1] == LAYER_TYPE_CNN || nn->layer_type[layer + 1] == LAYER_TYPE_POOL ||
+       nn->layer_type[layer + 1] == LAYER_TYPE_DROPOUT)) {
     return NN_ERROR_UNSUPPORTED_LAYER;
   }
   int old_width = nn->width[layer];
@@ -2124,9 +2307,10 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
     return 0.0f;
   }
   // CNN/POOL layers aren't neuron-indexed the way this function assumes
-  // (see nn_remove_neuron() for why); there's no meaningful "neuron weight"
-  // to report for one.
-  if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL) {
+  // (see nn_remove_neuron() for why), and DROPOUT has no weight matrix at
+  // all; there's no meaningful "neuron weight" to report for any of them.
+  if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
+      nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
     return 0.0f;
   }
   float total = 0.0f;
@@ -2144,7 +2328,8 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
   // Sum absolute values of output weights (this neuron to next layer), only
   // when the next layer's weight array is itself neuron-indexed (FC/OUTPUT).
   if (layer + 1 < (int)nn->depth &&
-      nn->layer_type[layer + 1] != LAYER_TYPE_CNN && nn->layer_type[layer + 1] != LAYER_TYPE_POOL) {
+      nn->layer_type[layer + 1] != LAYER_TYPE_CNN && nn->layer_type[layer + 1] != LAYER_TYPE_POOL &&
+      nn->layer_type[layer + 1] != LAYER_TYPE_DROPOUT) {
     int next_row_len = (int)nn->width[layer]; // layer+1's row length == this layer's width
     for (int i = 0; i < (int)nn->width[layer + 1]; i++) {
       if (nn->quantized) {
@@ -2174,11 +2359,17 @@ bool nn_prune_lightest_neuron(nn_t *nn)
   int lightest_layer = -1;
   int lightest_index = -1;
   float min_weight = FLT_MAX;
-  // Search all hidden layers (1..depth-2), skipping CNN/POOL layers -- their
-  // width isn't a flat list of independent neurons, so they can't be pruned
-  // this way (see nn_remove_neuron()).
+  // Search all hidden layers (1..depth-2), skipping CNN/POOL/DROPOUT layers
+  // -- none of them can be pruned this way (see nn_remove_neuron()). This
+  // isn't just an optimization: nn_get_total_neuron_weight() returns 0.0f
+  // for all three, which would otherwise look like the "lightest" possible
+  // neuron and win the search below, silently turning every prune attempt
+  // into a no-op (nn_remove_neuron() would then reject it, but its return
+  // value here is intentionally ignored the same way it is elsewhere in
+  // this function).
   for (int layer = 1; layer < (int)nn->depth - 1; layer++) {
-    if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL) {
+    if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
+        nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
       continue;
     }
     for (int neuron = 0; neuron < (int)nn->width[layer]; neuron++) {
@@ -2390,8 +2581,8 @@ nn_error_t nn_quantize(nn_t *nn)
   nn->bias_scale[0] = 0.0f;
   // Quantize each layer > 1
   for (int L = 1; L < depth; L++) {
-    if (nn->layer_type[L] == LAYER_TYPE_POOL) {
-      // Pooling has no weights/bias to quantize
+    if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
+      // Pooling and dropout both have no weights/bias to quantize
       nn->weight_quantized[L] = NULL;
       nn->weight_scale[L] = NULL;
       nn->bias_quantized[L] = NULL;
@@ -2452,7 +2643,7 @@ nn_error_t nn_quantize(nn_t *nn)
   // Free all of the original float-side storage AFTER quantization
   for (int L = 1; L < depth; L++) {
     // weight/weight_adj are each one flat buffer per layer (or NULL for
-    // POOL, where they were never allocated); free(NULL) is a no-op.
+    // POOL/DROPOUT, where they were never allocated); free(NULL) is a no-op.
     free(nn->weight[L]);
     free(nn->weight_adj[L]);
     free(nn->bias[L]);
@@ -2492,8 +2683,9 @@ nn_error_t nn_dequantize(nn_t *nn)
   nn->bias[0] = NULL;
   // For each layer >=1, rebuild float weight, weight_adj, bias
   for (int L = 1; L < depth; L++) {
-    if (nn->layer_type[L] == LAYER_TYPE_POOL) {
-      // Pooling has no weights/bias; nothing was quantized for it either.
+    if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
+      // Pooling and dropout both have no weights/bias; nothing was
+      // quantized for either.
       nn->weight[L] = NULL;
       nn->weight_adj[L] = NULL;
       nn->bias[L] = NULL;
@@ -2548,7 +2740,7 @@ nn_error_t nn_dequantize(nn_t *nn)
   nn->bias_scale[0] = 0.0f;
   for (int L = 1; L < depth; L++) {
     nn->bias_scale[L] = 0.0f;
-    if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+    if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
       nn->weight_scale[L] = NULL;
       continue;
     }

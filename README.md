@@ -24,7 +24,7 @@ The code is divided into the following sections:
 
 6. `predict.c` - Demonstrates how to use a trained neural network model in a target application to make predictions on new data.
 
-7. `prune.c` - Removes least contributing neuron from a network to reduce model size and improve performance.
+7. `prune.c` - Removes least contributing neurons from a network to reduce model size and improve performance.
 
 8. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
 
@@ -77,7 +77,7 @@ To use the trained model:
 ./predict
 ```
 
-To prune the model (this example removes the 10 least contributing neuron):
+To prune the model (this example removes the 10 least contributing neurons):
 
 ```
 ./prune model.txt 10
@@ -109,7 +109,7 @@ https://www.youtube.com/watch?v=cqjwSkrGtww
 
 ## Model File Format
 
-The model can be saved in either of two formats:
+The model can be saved in the following formats:
 
 * **ASCII** - a text file of floating-point values. The first line depicts the number of layers, inclusive of the input and output layers. The construct of each of those layers comprises the next set of lines, one line for each layer. The format of each line is width (in neurons), activation function, and bias. The remaining lines are the weights of each neuron in each layer, for all layers. Since there are no weights associated with the neurons in the input layer, these are skipped, and do not exist in the model file.
 
@@ -151,8 +151,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Add padding parms to conv2d
-* If using padding: feature_map_size = (N-F+2*P)/(S+1) <--the 2P is the padding
 * Add dropout layer type
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
 * Add RNN feature

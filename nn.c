@@ -345,6 +345,54 @@ static void nn_pool_backward(nn_t *nn, int layer, float *grad_in)
   }
 }
 
+// Routes a CNN layer's loss (dE/d(preact), already computed in nn->loss[layer])
+// back into grad_in, which must be zeroed by the caller and sized to the CNN
+// layer's input width (i.e. the previous layer's width) -- same contract as
+// nn_pool_backward() above. This is the transpose of nn_conv2d()'s forward
+// pass: each output position's loss is scattered back across the input
+// positions its kernel window read from, weighted by that same kernel.
+// Padding is handled the same way nn_conv2d() handles it -- ky/kx are
+// clipped to the sub-range of the kernel that overlaps a real (unpadded)
+// input position, so out-of-bounds (padding) positions are simply never
+// written to grad_in instead of needing an actual padded buffer.
+static void nn_conv_backward(nn_t *nn, int layer, float *grad_in)
+{
+  cnn_t *cnn = nn->config[layer];
+  const int in_c = cnn->in_channels;
+  const int out_c = cnn->out_channels;
+  const int ksize = cnn->kernel_size;
+  const int x_out = cnn->out_w;
+  const int y_out = cnn->out_h;
+  const int plane_out = x_out * y_out;
+  const int in_plane = cnn->in_w * cnn->in_h;
+  const int row_len = ksize * ksize;
+
+  for (int oc = 0; oc < out_c; ++oc) {
+    const float *loss = nn->loss[layer] + oc * plane_out;
+    for (int oy = 0; oy < y_out; ++oy) {
+      const int in_y0 = oy * cnn->stride - cnn->padding;
+      const int ky_start = in_y0 < 0 ? -in_y0 : 0;
+      const int ky_end = (in_y0 + ksize > cnn->in_h) ? (cnn->in_h - in_y0) : ksize;
+      for (int ox = 0; ox < x_out; ++ox) {
+        const int in_x0 = ox * cnn->stride - cnn->padding;
+        const int kx_start = in_x0 < 0 ? -in_x0 : 0;
+        const int kx_end = (in_x0 + ksize > cnn->in_w) ? (cnn->in_w - in_x0) : ksize;
+        const float delta = loss[oy * x_out + ox];
+        for (int ic = 0; ic < in_c; ++ic) {
+          const float *kptr = nn->weight[layer] + (oc * in_c + ic) * row_len;
+          float *dst_base = grad_in + ic * in_plane;
+          for (int ky = ky_start; ky < ky_end; ++ky) {
+            float *drow = dst_base + (in_y0 + ky) * cnn->in_w + in_x0;
+            const float *wrow = kptr + ky * ksize;
+            for (int kx = kx_start; kx < kx_end; ++kx)
+              drow[kx] += delta * wrow[kx];
+          }
+        }
+      }
+    }
+  }
+}
+
 static void forward_propagation(nn_t *nn)
 {
   float sum;
@@ -563,14 +611,22 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       return NN_ERROR_INVALID_CONFIG;
     }
     cnn_t *cnn_check = (cnn_t *)config;
-    // padding and dilation are accepted and round-tripped through save/load,
-    // but neither the output-size formula below nor nn_conv2d()'s actual
-    // convolution loop implements them -- silently accepting a non-default
-    // value would produce a different (and wrong, from the caller's
-    // expectation) result instead of what was asked for. Reject rather than
-    // silently ignore, until they're genuinely implemented.
-    if (cnn_check->padding != 0 || cnn_check->dilation != 1) {
-      fprintf(stderr, "nn_add_layer: CNN padding/dilation are not implemented (got padding=%u, dilation=%u; only padding=0, dilation=1 are supported)\n", cnn_check->padding, cnn_check->dilation);
+    // dilation is accepted and round-tripped through save/load, but neither
+    // the output-size formula below nor nn_conv2d()'s actual convolution
+    // loop implements it -- silently accepting a non-default value would
+    // produce a different (and wrong, from the caller's expectation) result
+    // instead of what was asked for. Reject rather than silently ignore,
+    // until it's genuinely implemented.
+    if (cnn_check->dilation != 1) {
+      fprintf(stderr, "nn_add_layer: CNN dilation is not implemented (got dilation=%u; only dilation=1 is supported)\n", cnn_check->dilation);
+      return NN_ERROR_INVALID_CONFIG;
+    }
+    // Padding must leave at least one valid output position in each spatial
+    // dimension, or the output-size formula below underflows.
+    if ((int)cnn_check->in_h + 2 * (int)cnn_check->padding < (int)cnn_check->kernel_size ||
+        (int)cnn_check->in_w + 2 * (int)cnn_check->padding < (int)cnn_check->kernel_size) {
+      fprintf(stderr, "nn_add_layer: CNN padding too large for kernel_size/input dims (in_h=%u, in_w=%u, kernel_size=%u, padding=%u)\n",
+              cnn_check->in_h, cnn_check->in_w, cnn_check->kernel_size, cnn_check->padding);
       return NN_ERROR_INVALID_CONFIG;
     }
   }
@@ -590,8 +646,8 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
     // config's validity (non-NULL, padding=0, dilation=1) was already
     // checked above before any of the mutation up to this point.
     cnn = (cnn_t *)config;
-    out_w = ((cnn->in_w - cnn->kernel_size) / cnn->stride) + 1;
-    out_h = ((cnn->in_h - cnn->kernel_size) / cnn->stride) + 1;
+    out_w = ((cnn->in_w + 2 * cnn->padding - cnn->kernel_size) / cnn->stride) + 1;
+    out_h = ((cnn->in_h + 2 * cnn->padding - cnn->kernel_size) / cnn->stride) + 1;
     nn->width[nn->depth - 1] = cnn->out_channels * out_w * out_h;
   } else if (layer_type == LAYER_TYPE_POOL) {
     if (config == NULL) {
@@ -798,6 +854,16 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       for (j = 0; j < (int)nn->width[i]; j++) {
         nn->loss[i][j] *= activation_function[nn->activation[i]](nn->preact[i][j], true);
       }
+    } else if (nn->layer_type[i + 1] == LAYER_TYPE_CNN) {
+      // Same idea as the POOL case above, but routed through the CNN
+      // layer's kernels (nn_conv_backward()) instead of a pooling rule --
+      // the generic weighted-sum formula below assumes a flat FC-style
+      // weight matrix, which a CNN layer's weight buffer is not.
+      memset(nn->loss[i], 0, nn->width[i] * sizeof(float));
+      nn_conv_backward(nn, i + 1, nn->loss[i]);
+      for (j = 0; j < (int)nn->width[i]; j++) {
+        nn->loss[i][j] *= activation_function[nn->activation[i]](nn->preact[i][j], true);
+      }
     } else {
       // Layer i+1's flat weight buffer has a row per its own neuron, each
       // row_len = width[i] wide (its previous layer's width, i.e. ours).
@@ -861,15 +927,25 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
         for (int ic = 0; ic < in_c; ++ic) {
           float *adj = nn->weight_adj[i] + (oc * in_c + ic) * ksize * ksize;
           memset(adj, 0, ksize * ksize * sizeof(float));
+          const float *base = nn->neuron[i - 1] + ic * in_plane;
           for (int oy = 0; oy < y_out; ++oy) {
-            int in_y = oy * cnn->stride;
+            // Clip the kernel-tap range to the sub-window that overlaps a
+            // real (unpadded) input row/column, same technique as
+            // nn_conv2d()/nn_conv_backward() -- a tap outside this range
+            // multiplied an implicit zero (padding) during the forward
+            // pass, and so contributes nothing to this weight's gradient.
+            int in_y0 = oy * cnn->stride - cnn->padding;
+            int ky_start = in_y0 < 0 ? -in_y0 : 0;
+            int ky_end = (in_y0 + ksize > cnn->in_h) ? (cnn->in_h - in_y0) : ksize;
             for (int ox = 0; ox < x_out; ++ox) {
-              int in_x = ox * cnn->stride;
+              int in_x0 = ox * cnn->stride - cnn->padding;
+              int kx_start = in_x0 < 0 ? -in_x0 : 0;
+              int kx_end = (in_x0 + ksize > cnn->in_w) ? (cnn->in_w - in_x0) : ksize;
               float delta = nn->loss[i][oc * plane_out + oy * x_out + ox];
-              const float *src = nn->neuron[i - 1] + ic * in_plane + in_y * cnn->in_w + in_x;
-              for (int ky = 0; ky < ksize; ++ky) {
-                for (int kx = 0; kx < ksize; ++kx) {
-                  adj[ky * ksize + kx] += delta * src[ky * cnn->in_w + kx];
+              for (int ky = ky_start; ky < ky_end; ++ky) {
+                const float *src = base + (in_y0 + ky) * cnn->in_w + in_x0;
+                for (int kx = kx_start; kx < kx_end; ++kx) {
+                  adj[ky * ksize + kx] += delta * src[kx];
                 }
               }
             }
@@ -2197,27 +2273,41 @@ void nn_conv2d(nn_t *nn, int layer)
     // channel), and in the quantized case the per-input-channel weight_scale
     // multiply happens once after accumulating that channel's raw kernel_size^2
     // int8*float products, instead of once per kernel tap.
+    //
+    // Padding is handled without ever allocating a padded copy of the input:
+    // for a given output position, (in_y0, in_x0) is where the kernel window
+    // would start in the *unpadded* input if padding were physically
+    // prepended, which is negative/out-of-bounds by up to `padding` near the
+    // borders. ky_start/ky_end (and kx_start/kx_end) clip the kernel-tap
+    // loop to just the sub-range that lands on a real input pixel -- taps
+    // outside that range multiply an implicit zero (the padding) and are
+    // simply skipped rather than read. With padding == 0 this range is
+    // always the full [0, kernel_size), so the loop bodies below are
+    // identical to the pre-padding behavior in that case.
     if (nn->quantized) {
         for (int oc = 0; oc < out_c; ++oc) {
             const float bias = (float)nn->bias_quantized[layer][oc] * nn->bias_scale[layer];
             float *dst = nn->neuron[layer] + oc * plane_out;
             float *pre = nn->preact[layer] + oc * plane_out;
             for (int oy = 0; oy < y_out; ++oy) {
-                const int in_y = oy * cnn->stride;
+                const int in_y0 = oy * cnn->stride - cnn->padding;
+                const int ky_start = in_y0 < 0 ? -in_y0 : 0;
+                const int ky_end = (in_y0 + cnn->kernel_size > cnn->in_h) ? (cnn->in_h - in_y0) : cnn->kernel_size;
                 for (int ox = 0; ox < x_out; ++ox) {
-                    const int in_x = ox * cnn->stride;
+                    const int in_x0 = ox * cnn->stride - cnn->padding;
+                    const int kx_start = in_x0 < 0 ? -in_x0 : 0;
+                    const int kx_end = (in_x0 + cnn->kernel_size > cnn->in_w) ? (cnn->in_w - in_x0) : cnn->kernel_size;
                     float sum = 0.0f;
                     for (int ic = 0; ic < in_c; ++ic) {
-                        const float *src = nn->neuron[layer - 1] + ic * cnn->in_h * cnn->in_w + in_y * cnn->in_w + in_x;
+                        const float *base = nn->neuron[layer - 1] + ic * cnn->in_h * cnn->in_w;
                         const int8_t *kptr = nn->weight_quantized[layer] + (oc * in_c + ic) * row_len;
                         const float wsc = nn->weight_scale[layer][oc * in_c + ic];
-                        const float *sptr = src;
                         float raw = 0.0f;
-                        for (int ky = 0; ky < cnn->kernel_size; ++ky) {
-                            for (int kx = 0; kx < cnn->kernel_size; ++kx)
-                                raw += sptr[kx] * (float)kptr[kx];
-                            sptr += cnn->in_w;
-                            kptr += cnn->kernel_size;
+                        for (int ky = ky_start; ky < ky_end; ++ky) {
+                            const float *sptr = base + (in_y0 + ky) * cnn->in_w + in_x0;
+                            const int8_t *wrow = kptr + ky * cnn->kernel_size;
+                            for (int kx = kx_start; kx < kx_end; ++kx)
+                                raw += sptr[kx] * (float)wrow[kx];
                         }
                         sum += raw * wsc;
                     }
@@ -2234,19 +2324,22 @@ void nn_conv2d(nn_t *nn, int layer)
             float *dst = nn->neuron[layer] + oc * plane_out;
             float *pre = nn->preact[layer] + oc * plane_out;
             for (int oy = 0; oy < y_out; ++oy) {
-                const int in_y = oy * cnn->stride;
+                const int in_y0 = oy * cnn->stride - cnn->padding;
+                const int ky_start = in_y0 < 0 ? -in_y0 : 0;
+                const int ky_end = (in_y0 + cnn->kernel_size > cnn->in_h) ? (cnn->in_h - in_y0) : cnn->kernel_size;
                 for (int ox = 0; ox < x_out; ++ox) {
-                    const int in_x = ox * cnn->stride;
+                    const int in_x0 = ox * cnn->stride - cnn->padding;
+                    const int kx_start = in_x0 < 0 ? -in_x0 : 0;
+                    const int kx_end = (in_x0 + cnn->kernel_size > cnn->in_w) ? (cnn->in_w - in_x0) : cnn->kernel_size;
                     float sum = 0.0f;
                     for (int ic = 0; ic < in_c; ++ic) {
-                        const float *src = nn->neuron[layer - 1] + ic * cnn->in_h * cnn->in_w + in_y * cnn->in_w + in_x;
+                        const float *base = nn->neuron[layer - 1] + ic * cnn->in_h * cnn->in_w;
                         const float *kptr = nn->weight[layer] + (oc * in_c + ic) * row_len;
-                        const float *sptr = src;
-                        for (int ky = 0; ky < cnn->kernel_size; ++ky) {
-                            for (int kx = 0; kx < cnn->kernel_size; ++kx)
-                                sum += sptr[kx] * kptr[kx];
-                            sptr += cnn->in_w;
-                            kptr += cnn->kernel_size;
+                        for (int ky = ky_start; ky < ky_end; ++ky) {
+                            const float *sptr = base + (in_y0 + ky) * cnn->in_w + in_x0;
+                            const float *wrow = kptr + ky * cnn->kernel_size;
+                            for (int kx = kx_start; kx < kx_end; ++kx)
+                                sum += sptr[kx] * wrow[kx];
                         }
                     }
                     const int oidx = oy * x_out + ox;

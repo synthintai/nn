@@ -149,6 +149,15 @@ static float activation_function_gelu(float a, bool derivative)
   return a * cdf;
 }
 
+// Sigmoid Linear Unit (SiLU) activation function (aka Swish)
+static float activation_function_silu(float a, bool derivative)
+{
+  float s = activation_function_sigmoid(a, false);
+  if (derivative)
+    return s + a * s * (1.0f - s);
+  return a * s;
+}
+
 // These must be in the same order as the enum activation_function_type
 static activation_function_t activation_function[] = {
     activation_function_none,
@@ -161,7 +170,8 @@ static activation_function_t activation_function[] = {
     activation_function_sigmoid_fast,
     activation_function_tanh,
     activation_function_tanh_fast,
-    activation_function_gelu};
+    activation_function_gelu,
+    activation_function_silu};
 
 // Computes the error given a cost function
 // The loss function is a basic mean-square error (MSE)

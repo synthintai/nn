@@ -13,7 +13,7 @@
 static const char *activation_names[] = {
     "NONE",      "LINEAR",  "RELU",         "LEAKY_RELU", "ELU",
     "THRESHOLD", "SIGMOID", "SIGMOID_FAST", "TANH",       "TANH_FAST",
-    "GELU"};
+    "GELU",      "SILU"};
 
 static const char *layer_types[] = {
     "NONE",        "FC",         "CNN",        "POOL",       "LSTM",

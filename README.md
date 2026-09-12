@@ -109,9 +109,11 @@ The model can be saved in either of two formats:
 
 `nn_load_model()` reads a model file's first few bytes and dispatches to the ASCII or binary loader automatically based on the magic number, so any tool that calls it can open either kind of model file without knowing in advance which format it's in. `nn_save_model()` writes binary format when the destination path ends in `.bin` (case-insensitive) and ASCII format otherwise. `train`, `test`, `predict`, `prune`, `quantize`, `dequantize`, and `summary` all use these, so passing e.g. `model.bin` instead of `model.txt` is enough to train, evaluate, prune, (de)quantize, or run inference against a binary model file. `nn_load_model_ascii`/`nn_save_model_ascii` and `nn_load_model_binary`/`nn_save_model_binary` remain available for callers that need to force a specific format regardless of extension (as `export` and `import` do, to convert between the two).
 
+For targets with no filesystem, `nn_load_model_memory(data, size)` parses that same binary format directly out of a caller-supplied buffer (e.g. a model baked into flash as a byte array on a microcontroller) instead of reading from a file, with no `FILE*`/`fopen` dependency. It copies the model into its own allocations, so `data` only needs to stay valid for the duration of the call.
+
 ## Integration
 
-To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference.
+To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference. `nn_load_model_memory()` (see above) is the entry point intended for microcontroller-class inference-only use.
 
 ## License
 
@@ -121,7 +123,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Add nn_load_model_memory for embedded use
 * Add padding parms to conv2d
 * If using padding: feature_map_size = (N-F+2*P)/(S+1) <--the 2P is the padding
 * Add dropout layer type

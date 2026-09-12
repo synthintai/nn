@@ -9,6 +9,7 @@
 #define NN_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // NN API Version
@@ -151,6 +152,11 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path);
 nn_error_t nn_save_model_binary(nn_t *nn, const char *path);
 nn_t *nn_load_model_ascii(const char *path);
 nn_t *nn_load_model_binary(const char *path);
+// Loads a model from a binary-format buffer already resident in memory (e.g.
+// a model baked into flash as a byte array on a microcontroller with no
+// filesystem) instead of from a file. See the comment above its definition
+// in nn.c for buffer-lifetime and inference-only usage notes.
+nn_t *nn_load_model_memory(const uint8_t *data, size_t size);
 // Loads a model file, auto-detecting ascii vs. binary from the binary
 // format's magic number -- use this instead of nn_load_model_{ascii,binary}
 // when the caller doesn't know (or care) which format a model file is in.

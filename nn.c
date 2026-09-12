@@ -1147,67 +1147,84 @@ cleanup_quant_per_layer:
   goto cleanup_quant_top;
 }
 
-// Loads a neural-net model from a raw binary file.
-nn_t *nn_load_model_binary(const char *path)
+// Minimal reader abstraction so the binary model format only needs to be
+// parsed once, whether the bytes come from an open FILE* (nn_load_model_binary(),
+// reading from disk) or directly from a caller-supplied buffer
+// (nn_load_model_memory(), e.g. a model baked into flash on a microcontroller
+// with no filesystem).
+typedef struct {
+  FILE *file;           // Non-NULL when reading from a file
+  const uint8_t *buf;   // Non-NULL when reading from a memory buffer
+  size_t buf_len;
+  size_t buf_pos;
+} nn_reader_t;
+
+static bool nn_reader_read(nn_reader_t *r, void *dst, size_t n)
 {
-  FILE *file = fopen(path, "rb");
-  if (!file)
-    return NULL;
+  if (r->file)
+    return fread(dst, 1, n, r->file) == n;
+  if (n > r->buf_len - r->buf_pos)
+    return false;
+  memcpy(dst, r->buf + r->buf_pos, n);
+  r->buf_pos += n;
+  return true;
+}
+
+// Parses the binary model format described at the top of nn_save_model_binary()
+// from `r`. Common to both nn_load_model_binary() and nn_load_model_memory().
+static nn_t *nn_load_model_binary_impl(nn_reader_t *r)
+{
   // Magic number
   uint8_t magic[NN_BINARY_MAGIC_LEN];
-  if (fread(magic, 1, NN_BINARY_MAGIC_LEN, file) != NN_BINARY_MAGIC_LEN ||
-      memcmp(magic, NN_BINARY_MAGIC, NN_BINARY_MAGIC_LEN) != 0) {
-    fclose(file);
+  if (!nn_reader_read(r, magic, NN_BINARY_MAGIC_LEN) ||
+      memcmp(magic, NN_BINARY_MAGIC, NN_BINARY_MAGIC_LEN) != 0)
     return NULL;
-  }
   nn_t *nn = nn_init();
-  if (!nn) {
-    fclose(file);
+  if (!nn)
     return NULL;
-  }
   // Quantized flag
   uint8_t qflag;
-  if (fread(&qflag, sizeof(qflag), 1, file) != 1)
-    goto error;
+  if (!nn_reader_read(r, &qflag, sizeof(qflag)))
+    goto fail;
   nn->quantized = (qflag != 0);
   // Model version
-  if (fread(&nn->version_major, sizeof(nn->version_major), 1, file) != 1)
-    goto error;
-  if (fread(&nn->version_minor, sizeof(nn->version_minor), 1, file) != 1)
-    goto error;
-  if (fread(&nn->version_patch, sizeof(nn->version_patch), 1, file) != 1)
-    goto error;
-  if (fread(&nn->version_build, sizeof(nn->version_build), 1, file) != 1)
-    goto error;
+  if (!nn_reader_read(r, &nn->version_major, sizeof(nn->version_major)))
+    goto fail;
+  if (!nn_reader_read(r, &nn->version_minor, sizeof(nn->version_minor)))
+    goto fail;
+  if (!nn_reader_read(r, &nn->version_patch, sizeof(nn->version_patch)))
+    goto fail;
+  if (!nn_reader_read(r, &nn->version_build, sizeof(nn->version_build)))
+    goto fail;
   // Depth
   uint32_t depth;
-  if (fread(&depth, sizeof(depth), 1, file) != 1)
-    goto error;
+  if (!nn_reader_read(r, &depth, sizeof(depth)))
+    goto fail;
   // Read each layer's width, layer type, and activation and call nn_add_layer()
   for (uint32_t i = 0; i < depth; i++) {
     uint8_t layer_type;
     uint32_t w;
     uint8_t a;
-    if (fread(&layer_type, sizeof(layer_type), 1, file) != 1)
-      goto error;
-    if (fread(&w, sizeof(w), 1, file) != 1)
-      goto error;
-    if (fread(&a, sizeof(a), 1, file) != 1)
-      goto error;
+    if (!nn_reader_read(r, &layer_type, sizeof(layer_type)))
+      goto fail;
+    if (!nn_reader_read(r, &w, sizeof(w)))
+      goto fail;
+    if (!nn_reader_read(r, &a, sizeof(a)))
+      goto fail;
     cnn_t ctmp;
     pool_t ptmp;
     void *cptr = NULL;
     if (layer_type == LAYER_TYPE_CNN) {
-      if (fread(&ctmp, sizeof(ctmp), 1, file) != 1)
-        goto error;
+      if (!nn_reader_read(r, &ctmp, sizeof(ctmp)))
+        goto fail;
       cptr = &ctmp; w = 0;
     } else if (layer_type == LAYER_TYPE_POOL) {
-      if (fread(&ptmp, sizeof(ptmp), 1, file) != 1)
-        goto error;
+      if (!nn_reader_read(r, &ptmp, sizeof(ptmp)))
+        goto fail;
       cptr = &ptmp; w = 0;
     }
     if (nn_add_layer(nn, layer_type, (int)w, (int)a, cptr) != 0)
-     goto cleanup;
+     goto fail;
   }
   // Note: neuron/loss/preact for every layer >= 1 were already allocated by
   // nn_add_layer() inside the layer-construction loop above; re-allocating
@@ -1218,36 +1235,36 @@ nn_t *nn_load_model_binary(const char *path)
     for (int L = 1; L < (int)depth; L++) {
       float dummy;
       // bias_scale placeholder
-      if (fread(&dummy, sizeof(dummy), 1, file) != 1)
-        goto cleanup;
+      if (!nn_reader_read(r, &dummy, sizeof(dummy)))
+        goto fail;
       if (nn->layer_type[L] == LAYER_TYPE_CNN) {
         cnn_t *c = nn->config[L];
         int kernels = c->out_channels * c->in_channels;
         int k_elems = c->kernel_size * c->kernel_size;
         for (int k = 0; k < kernels; ++k) {
           // per-kernel weight-scale placeholder
-          if (fread(&dummy, sizeof(dummy), 1, file) != 1)
-            goto cleanup;
-          if (fread(nn->weight[L] + k * k_elems, sizeof(float), k_elems, file) != (size_t)k_elems)
-            goto cleanup;
+          if (!nn_reader_read(r, &dummy, sizeof(dummy)))
+            goto fail;
+          if (!nn_reader_read(r, nn->weight[L] + k * k_elems, sizeof(float) * (size_t)k_elems))
+            goto fail;
         }
         // One bias per output channel
-        if (fread(nn->bias[L], sizeof(float), c->out_channels, file) != (size_t)c->out_channels)
-          goto cleanup;
+        if (!nn_reader_read(r, nn->bias[L], sizeof(float) * (size_t)c->out_channels))
+          goto fail;
       } else if (nn->layer_type[L] == LAYER_TYPE_POOL) {
         // Pooling has no weights/bias beyond the placeholder read above
       } else {
         uint32_t curr = nn->width[L], prev = nn->width[L - 1];
         for (uint32_t i = 0; i < curr; i++) {
           // weight_scale placeholder
-          if (fread(&dummy, sizeof(dummy), 1, file) != 1)
-            goto cleanup;
+          if (!nn_reader_read(r, &dummy, sizeof(dummy)))
+            goto fail;
           // weights
-          if (fread(nn->weight[L] + i * prev, sizeof(float), prev, file) != prev)
-            goto cleanup;
+          if (!nn_reader_read(r, nn->weight[L] + i * prev, sizeof(float) * (size_t)prev))
+            goto fail;
           // bias
-          if (fread(&nn->bias[L][i], sizeof(float), 1, file) != 1)
-            goto cleanup;
+          if (!nn_reader_read(r, &nn->bias[L][i], sizeof(float)))
+            goto fail;
         }
       }
     }
@@ -1279,8 +1296,8 @@ nn_t *nn_load_model_binary(const char *path)
     nn->bias_scale = malloc(depth * sizeof(float));
     if (!nn->weight_quantized || !nn->weight_scale || !nn->bias_quantized ||
         !nn->bias_scale)
-      goto cleanup;
-    // Zero every layer's slot up front so that if a `goto cleanup` below
+      goto fail;
+    // Zero every layer's slot up front so that if a `goto fail` below
     // fires partway through the per-layer read loop, nn_free() can safely
     // free every layer -- including ones not reached yet -- instead of
     // indexing uninitialized garbage left over from this malloc.
@@ -1303,33 +1320,56 @@ nn_t *nn_load_model_binary(const char *path)
       nn->bias_quantized[L] = malloc(bias_count * sizeof(int8_t));
       if (!nn->weight_quantized[L] || !nn->weight_scale[L] ||
           !nn->bias_quantized[L])
-        goto cleanup;
+        goto fail;
       // Read each row's (neuron or kernel) weight_scale and weights
       for (int i = 0; i < rows; i++) {
-        if (fread(&nn->weight_scale[L][i], sizeof(float), 1, file) != 1)
-          goto cleanup;
-        if (fread(nn->weight_quantized[L] + i * row_len, sizeof(int8_t), row_len, file) !=
-            (size_t)row_len)
-          goto cleanup;
+        if (!nn_reader_read(r, &nn->weight_scale[L][i], sizeof(float)))
+          goto fail;
+        if (!nn_reader_read(r, nn->weight_quantized[L] + i * row_len, sizeof(int8_t) * (size_t)row_len))
+          goto fail;
       }
       // Read bias_scale[L]
-      if (fread(&nn->bias_scale[L], sizeof(float), 1, file) != 1)
-        goto cleanup;
+      if (!nn_reader_read(r, &nn->bias_scale[L], sizeof(float)))
+        goto fail;
       // Read quantized biases (one per output channel for CNN, one per neuron for FC/OUTPUT)
-      if (fread(nn->bias_quantized[L], sizeof(int8_t), bias_count, file) != (size_t)bias_count)
-        goto cleanup;
+      if (!nn_reader_read(r, nn->bias_quantized[L], sizeof(int8_t) * (size_t)bias_count))
+        goto fail;
     }
   }
+  return nn;
+fail:
+  nn_free(nn);
+  return NULL;
+}
+
+// Loads a neural-net model from a raw binary file.
+nn_t *nn_load_model_binary(const char *path)
+{
+  FILE *file = fopen(path, "rb");
+  if (!file)
+    return NULL;
+  nn_reader_t r = {.file = file};
+  nn_t *nn = nn_load_model_binary_impl(&r);
   fclose(file);
   return nn;
-cleanup:
-  fclose(file);
-  nn_free(nn);
-  return NULL;
-error:
-  fclose(file);
-  nn_free(nn);
-  return NULL;
+}
+
+// Loads a neural-net model from a binary-format buffer already resident in
+// memory (e.g. a model baked into flash as a byte array on a microcontroller
+// with no filesystem) instead of from a file. `data` must hold `size` bytes
+// in the same format nn_save_model_binary() writes, and must stay valid only
+// for the duration of this call -- the model is copied into its own
+// allocations, so the buffer may be freed or reused immediately afterward.
+// Intended for the inference path: load a model produced by nn_save_model_binary()
+// (float or quantized) and use it with nn_predict(); the returned nn_t is
+// otherwise identical to one loaded from a file and must still be released
+// with nn_free().
+nn_t *nn_load_model_memory(const uint8_t *data, size_t size)
+{
+  if (!data)
+    return NULL;
+  nn_reader_t r = {.buf = data, .buf_len = size};
+  return nn_load_model_binary_impl(&r);
 }
 
 // Saves a neural net model to a file.

@@ -464,7 +464,7 @@ nn_t *nn_init(void)
   nn->bias_quantized = NULL;
   nn->bias_scale = NULL;
   nn->pool_argmax = NULL;
-  nn->weights_in_flash = false;
+  nn->immutable = false;
   return nn;
 }
 
@@ -481,8 +481,8 @@ void nn_free(nn_t *nn)
       // every layer type. Except: for a model loaded with
       // nn_load_model_inplace(), weight[layer]/bias[layer] alias the
       // caller's buffer instead of being owned allocations -- freeing them
-      // would be undefined behavior, so weights_in_flash gates those two.
-      if (!nn->weights_in_flash) {
+      // would be undefined behavior, so immutable gates those two.
+      if (!nn->immutable) {
         free(nn->weight[layer]);
         free(nn->bias[layer]);
       }
@@ -518,7 +518,7 @@ void nn_free(nn_t *nn)
       // As above (float-side comment), weight_quantized[layer]/
       // weight_scale[layer]/bias_quantized[layer] alias the caller's buffer
       // for a model loaded with nn_load_model_inplace() and must not be freed.
-      if (nn->weight_quantized && !nn->weights_in_flash) {
+      if (nn->weight_quantized && !nn->immutable) {
         free(nn->weight_quantized[layer]);
         free(nn->weight_scale[layer]);
         free(nn->bias_quantized[layer]);
@@ -748,7 +748,7 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   int i, j, k;
   float err;
 
-  if (nn->weights_in_flash) {
+  if (nn->immutable) {
     // A model loaded with nn_load_model_inplace() has its weights aliased
     // into the caller's (typically flash-resident, read-only) buffer --
     // there is nothing writable here for gradient descent to update.
@@ -1578,10 +1578,10 @@ fail:
 //
 // The returned model is read-only: nn_train(), nn_quantize(), nn_dequantize(),
 // nn_remove_neuron(), and nn_prune_lightest_neuron() all refuse to run
-// against it (nn->weights_in_flash is set to true), since each would need to
+// against it (nn->immutable is set to true), since each would need to
 // write through the aliased pointers above. Use nn_predict()/nn_error() for
 // inference. Release it with nn_free() as usual -- nn_free() checks
-// weights_in_flash to know it must not free those aliased pointers, only
+// immutable to know it must not free those aliased pointers, only
 // the small bookkeeping this function allocates itself (layer_type/width/
 // activation/config, the top-level pointer arrays, and per-layer
 // neuron/preact activation buffers).
@@ -1608,7 +1608,7 @@ nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
   nn->version_minor = (uint8_t)(version >> 16);
   nn->version_patch = (uint8_t)(version >> 8);
   nn->version_build = (uint8_t)version;
-  nn->weights_in_flash = true;
+  nn->immutable = true;
   nn->depth = 0; // Only set to `depth` once every array below is allocated (see comment there)
   nn->layer_type = NULL; nn->width = NULL; nn->activation = NULL; nn->config = NULL;
   nn->neuron = NULL; nn->loss = NULL; nn->preact = NULL;
@@ -1698,7 +1698,7 @@ nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
       goto fail;
     // loss[L] and pool_argmax[L] stay NULL: nn_predict()/nn_error() (the
     // only operations a read-only model supports) never touch them -- only
-    // backprop would, and that's refused via weights_in_flash above.
+    // backprop would, and that's refused via immutable above.
     if (nn->layer_type[L] == LAYER_TYPE_POOL)
       continue;
     int rows, row_len, bias_count;
@@ -1940,7 +1940,7 @@ nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   if (nn == NULL || layer <= 0 || layer >= (int)nn->depth || neuron_index < 0 || neuron_index >= (int)nn->width[layer]) {
     return NN_ERROR_INVALID_ARGUMENT;
   }
-  if (nn->weights_in_flash) {
+  if (nn->immutable) {
     // Removing a neuron reallocs/shifts weight (or weight_quantized) and
     // bias in place, which is not possible on buffers aliased into the
     // caller's (read-only) buffer for a model loaded with nn_load_model_inplace().
@@ -2089,7 +2089,7 @@ bool nn_prune_lightest_neuron(nn_t *nn)
     // Invalid or uninitialized network
     return false;
   }
-  if (nn->weights_in_flash) {
+  if (nn->immutable) {
     // nn_remove_neuron() below would refuse anyway, but its return value is
     // ignored here -- check explicitly so this doesn't silently report
     // success on a read-only, flash-resident model.
@@ -2265,7 +2265,7 @@ nn_error_t nn_quantize(nn_t *nn)
   if (!nn || nn->quantized) {
     return NN_ERROR_INVALID_ARGUMENT;
   }
-  if (nn->weights_in_flash) {
+  if (nn->immutable) {
     // Quantizing rewrites weight_scale/bias_scale/weight_quantized/bias_quantized
     // in place, which would require freeing/reallocating buffers aliased
     // into the caller's (read-only) buffer for a model loaded with
@@ -2380,7 +2380,7 @@ nn_error_t nn_dequantize(nn_t *nn)
   if (!nn || !nn->quantized) {
     return NN_ERROR_INVALID_ARGUMENT;
   }
-  if (nn->weights_in_flash) {
+  if (nn->immutable) {
     // As in nn_quantize(): dequantizing rewrites weight/weight_adj/bias and
     // frees the quantized-side buffers, which are aliased into the caller's
     // (read-only) buffer for a model loaded with nn_load_model_inplace().

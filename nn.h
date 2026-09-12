@@ -146,11 +146,12 @@ typedef struct {
   // True only for a model returned by nn_load_model_inplace(): weight,
   // weight_quantized, weight_scale, and bias/bias_quantized then point
   // directly into the caller's (read-only, e.g. flash-resident) buffer
-  // instead of owned heap allocations. nn_free() checks this to know which
-  // per-layer buffers it must NOT free, and nn_train()/nn_quantize()/
-  // nn_dequantize()/nn_remove_neuron()/nn_prune_lightest_neuron() check it to
-  // refuse to write through those pointers. Never set this yourself.
-  bool weights_in_flash;
+  // instead of owned heap allocations, and must never be written through.
+  // nn_free() checks this to know which per-layer buffers it must NOT free,
+  // and nn_train()/nn_quantize()/nn_dequantize()/nn_remove_neuron()/
+  // nn_prune_lightest_neuron() check it to refuse to mutate the model at
+  // all. Never set this yourself.
+  bool immutable;
 } nn_t;
 
 uint32_t nn_version(void);

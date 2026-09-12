@@ -89,6 +89,14 @@ To quantize the trained model (which is floating point by default), run the foll
 ./quantize model.txt model_quantized.txt
 ```
 
+To export a trained (ascii) model as a flash-resident binary for a microcontroller target, add `--inplace` so `export` writes the zero-copy "inplace" format instead of the regular binary format:
+
+```
+./export model.txt model_inplace.bin --inplace
+```
+
+See [Embedding an inplace model as a C header](#embedding-an-inplace-model-as-a-c-header) below for turning that file into a `.h` you can `#include` and pass to `nn_load_model_inplace()`. Omit `--inplace` to instead get the regular binary format (`nn_load_model_binary()`/`nn_load_model_memory()`).
+
 ## Architecture
 
 The network architecture is a fully connected feed-forward neural network. It is based on floating-point computation. The widths of each layer, the activation function to be used, and the bias for each layer is set as each successive layer is added to the network using the `nn_add_layer()` function call. Multiple layers may be added to construct a deep neural network.
@@ -107,11 +115,29 @@ The model can be saved in either of two formats:
 
 * **Binary** - a compact, raw binary encoding of the same information. Every binary model file begins with the 4-byte magic number `NNB1`, followed by the same fields the ASCII format stores (quantized flag, version, layer definitions, weights, and biases), written as raw integers/floats rather than text.
 
-`nn_load_model()` reads a model file's first few bytes and dispatches to the ASCII or binary loader automatically based on the magic number, so any tool that calls it can open either kind of model file without knowing in advance which format it's in. `nn_save_model()` writes binary format when the destination path ends in `.bin` (case-insensitive) and ASCII format otherwise. `train`, `test`, `predict`, `prune`, `quantize`, `dequantize`, and `summary` all use these, so passing e.g. `model.bin` instead of `model.txt` is enough to train, evaluate, prune, (de)quantize, or run inference against a binary model file. `nn_load_model_ascii`/`nn_save_model_ascii` and `nn_load_model_binary`/`nn_save_model_binary` remain available for callers that need to force a specific format regardless of extension (as `export` and `import` do, to convert between the two).
+`nn_load_model()` reads a model file's first few bytes and dispatches to the ASCII or binary loader automatically based on the magic number, so any tool that calls it can open either kind of model file without knowing in advance which format it's in. `nn_save_model()` writes binary format when the destination path ends in `.bin` (case-insensitive) and ASCII format otherwise. `train`, `test`, `predict`, `prune`, `quantize`, `dequantize`, and `summary` all use these, so passing e.g. `model.bin` instead of `model.txt` is enough to train, evaluate, prune, (de)quantize, or run inference against a binary model file. `nn_load_model_ascii`/`nn_save_model_ascii` and `nn_load_model_binary`/`nn_save_model_binary` remain available for callers that need to force a specific format regardless of extension (as `export` and `import` do, to convert between the two). `export` also accepts an `--inplace` flag to write the inplace format (below) instead.
 
 For targets with no filesystem, `nn_load_model_memory(data, size)` parses that same binary format directly out of a caller-supplied buffer (e.g. a model baked into flash as a byte array on a microcontroller) instead of reading from a file, with no `FILE*`/`fopen` dependency. It copies the model into its own allocations, so `data` only needs to stay valid for the duration of the call.
 
 * **Inplace** - a third format (magic `NNP1`), written by `nn_save_model_inplace()` and read back with zero copy by `nn_load_model_inplace(data, size)`: instead of parsing weights/biases into freshly malloc'd RAM, the returned model's weight (or weight_quantized) and bias (or bias_quantized) arrays point directly into the caller's buffer. This is the format for microcontroller targets where RAM, not flash, is the tight resource -- the buffer (typically a `static const uint8_t[]` baked into flash) must stay valid for as long as the model is used, and the model it produces is read-only: `nn_train()`, `nn_quantize()`, `nn_dequantize()`, `nn_remove_neuron()`, and `nn_prune_lightest_neuron()` all refuse to run against it. Use `nn_predict()`/`nn_error()` for inference as usual, and release it with `nn_free()` as usual -- it knows not to free the aliased buffers.
+
+### Embedding an inplace model as a C header
+
+To bake an inplace-format model into firmware as a flash-resident array, convert the file `nn_save_model_inplace()` wrote with [`xxd -i`](https://linux.die.net/man/1/xxd):
+
+```
+xxd -i model_inplace.bin > model_inplace.h
+```
+
+This generates a `.h` file with a `unsigned char model_inplace_bin[] = {...};` array and a `unsigned int model_inplace_bin_len` byte count. `#include` it, then hand the array straight to `nn_load_model_inplace()`:
+
+```c
+#include "model_inplace.h"
+
+nn_t *nn = nn_load_model_inplace(model_inplace_bin, model_inplace_bin_len);
+```
+
+`xxd -i` doesn't add an alignment attribute, so on a toolchain/linker that doesn't already place `.rodata` arrays 4-byte aligned, add one by hand to the generated declaration (`unsigned char model_inplace_bin[] __attribute__((aligned(4))) = {...};`) -- `nn_load_model_inplace()` requires 4-byte alignment (see its comment in nn.c).
 
 ## Integration
 

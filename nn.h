@@ -211,9 +211,37 @@ nn_error_t nn_save_model_inplace(nn_t *nn, const char *path);
 // definition in nn.c for buffer-lifetime, alignment, and read-only usage
 // requirements.
 nn_t *nn_load_model_inplace(const uint8_t *data, size_t size);
+// Loads a model from an "inplace"-format buffer the same way
+// nn_load_model_inplace() does, except every weight/bias array is copied
+// into a freshly owned allocation instead of aliased into `data` -- a
+// normal, fully mutable model, usable with nn_train(), nn_quantize(),
+// nn_dequantize(), nn_remove_neuron(), and nn_prune_lightest_neuron() (at
+// the RAM cost nn_load_model_inplace() exists to avoid). Use this instead
+// of nn_load_model_inplace() when you need to modify an inplace-format
+// model rather than just run inference against it; `data` only needs to
+// stay valid for the duration of this call.
+nn_t *nn_load_model_inplace_copy(const uint8_t *data, size_t size);
+
+typedef enum {
+  NN_MODEL_FORMAT_UNKNOWN = 0, // Could not open the file
+  NN_MODEL_FORMAT_ASCII,
+  NN_MODEL_FORMAT_BINARY,      // magic "NNB1" -- nn_load_model_binary()/nn_load_model_memory()
+  NN_MODEL_FORMAT_INPLACE,     // magic "NNP1" -- nn_load_model_inplace()
+} nn_model_format_t;
+
+// Peeks a model file's first few bytes to report which of the three formats
+// (see the "Model File Format" section of the README) it's in, without
+// loading the model. A file that opens but doesn't match either binary
+// magic number is assumed to be ASCII -- same convention nn_load_model()
+// itself uses, so this never disagrees with what nn_load_model() would
+// actually load the file as.
+nn_model_format_t nn_model_format(const char *path);
 // Loads a model file, auto-detecting ascii vs. binary from the binary
 // format's magic number -- use this instead of nn_load_model_{ascii,binary}
 // when the caller doesn't know (or care) which format a model file is in.
+// Note this does not handle the "inplace" format (see nn_model_format()
+// above and nn_load_model_inplace()): that format is meant to be read
+// directly from a memory buffer (e.g. flash), not opened as a path here.
 nn_t *nn_load_model(const char *path);
 // Saves a model file, writing binary format if `path` ends in ".bin"
 // (case-insensitive) and ascii format otherwise.

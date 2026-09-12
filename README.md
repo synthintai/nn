@@ -28,7 +28,7 @@ The code is divided into the following sections:
 
 8. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
 
-9. `summary.c` - Describes a model file.
+9. `summary.c` - Describes a model file, including which of the three formats (ASCII, binary, or inplace) it's saved in.
 
 ## Features
 
@@ -90,13 +90,19 @@ To quantize the trained model (which is floating point by default), run the foll
 ./quantize model.txt model_quantized.txt
 ```
 
-To export a trained (ascii) model as a flash-resident binary for a microcontroller target, add `--inplace` so `export` writes the zero-copy "inplace" format instead of the regular binary format:
+To export a trained model as a flash-resident binary for a microcontroller target, add `--inplace` so `export` writes the zero-copy "inplace" format instead of the regular binary format. `export` accepts any of the three model formats as input (it auto-detects ASCII, binary, or an existing inplace file), so this works directly on whichever one you have:
 
 ```
 ./export model.txt model_inplace.bin --inplace
 ```
 
 See [Embedding an inplace model as a C header](#embedding-an-inplace-model-as-a-c-header) below for turning that file into a `.h` you can `#include` and pass to `nn_load_model_inplace()`. Omit `--inplace` to instead get the regular binary format (`nn_load_model_binary()`/`nn_load_model_memory()`).
+
+To check which format a model file is in (along with its version, quantization status, and layer-by-layer layout), run:
+
+```
+./summary model.txt
+```
 
 ## Architecture
 
@@ -116,7 +122,9 @@ The model can be saved in the following formats:
 
 * **Binary** - a compact, raw binary encoding of the same information. Every binary model file begins with the 4-byte magic number `NNB1`, followed by the same fields the ASCII format stores (quantized flag, version, layer definitions, weights, and biases), written as raw integers/floats rather than text.
 
-`nn_load_model()` reads a model file's first few bytes and dispatches to the ASCII or binary loader automatically based on the magic number, so any tool that calls it can open either kind of model file without knowing in advance which format it's in. `nn_save_model()` writes binary format when the destination path ends in `.bin` (case-insensitive) and ASCII format otherwise. `train`, `test`, `predict`, `prune`, `quantize`, `dequantize`, and `summary` all use these, so passing e.g. `model.bin` instead of `model.txt` is enough to train, evaluate, prune, (de)quantize, or run inference against a binary model file. `nn_load_model_ascii`/`nn_save_model_ascii` and `nn_load_model_binary`/`nn_save_model_binary` remain available for callers that need to force a specific format regardless of extension (as `export` and `import` do, to convert between the two). `export` also accepts an `--inplace` flag to write the inplace format (below) instead.
+`nn_load_model()` reads a model file's first few bytes and dispatches to the ASCII or binary loader automatically based on the magic number, so any tool that calls it can open either kind of model file without knowing in advance which format it's in. `nn_save_model()` writes binary format when the destination path ends in `.bin` (case-insensitive) and ASCII format otherwise. `train`, `test`, `predict`, `prune`, `quantize`, `dequantize`, and `summary` all use these, so passing e.g. `model.bin` instead of `model.txt` is enough to train, evaluate, prune, (de)quantize, or run inference against a binary model file. `nn_load_model_ascii`/`nn_save_model_ascii` and `nn_load_model_binary`/`nn_save_model_binary` remain available for callers that need to force a specific format regardless of extension (as `import` does, to convert binary back to ASCII).
+
+`nn_model_format(path)` peeks a file's first few bytes (without loading it) to report which of the three formats -- ASCII, binary, or inplace -- it's in; `summary` uses this to print a `Model Format:` line, and `export` uses it to accept any of the three as input (reading an inplace file into a buffer and loading it with `nn_load_model_inplace()`, since that format has to be read from memory rather than a plain path) regardless of which one it writes as output. `export` also accepts an `--inplace` flag to write the inplace format (below) instead of the regular binary format.
 
 For targets with no filesystem, `nn_load_model_memory(data, size)` parses that same binary format directly out of a caller-supplied buffer (e.g. a model baked into flash as a byte array on a microcontroller) instead of reading from a file, with no `FILE*`/`fopen` dependency. It copies the model into its own allocations, so `data` only needs to stay valid for the duration of the call.
 

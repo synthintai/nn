@@ -1554,6 +1554,37 @@ static bool nn_reader_alias_padded(nn_reader_t *r, const void **out, size_t n)
   return pad == 0 || nn_reader_skip(r, pad);
 }
 
+// Obtains `n` bytes (plus alignment padding) from a memory-backed reader
+// either by aliasing them directly (copy == false, used by
+// nn_load_model_inplace() for zero-copy loading) or by allocating a fresh
+// buffer and copying them into it (copy == true, used by
+// nn_load_model_inplace_copy() to produce a normal, fully owned/mutable
+// model instead). `*out` is set to the resulting pointer (aliased or
+// owned) on success; the caller owns it in the copy case and must free()
+// it eventually (nn_free() already does, via the same fields it would free
+// for any other owned model).
+static bool nn_reader_obtain(nn_reader_t *r, void **out, size_t n, bool copy)
+{
+  if (!copy) {
+    const void *block;
+    if (!nn_reader_alias_padded(r, &block, n))
+      return false;
+    *out = (void *)block; // see nn->immutable's doc comment in nn.h: the
+                           // caller (nn_load_model_inplace) never writes
+                           // through this despite the field's mutable type
+    return true;
+  }
+  void *buf = n ? malloc(n) : NULL;
+  if (n && !buf)
+    return false;
+  if (!nn_reader_read_padded(r, buf, n)) {
+    free(buf);
+    return false;
+  }
+  *out = buf;
+  return true;
+}
+
 // Parses the binary model format described at the top of nn_save_model_binary()
 // from `r`. Common to both nn_load_model_binary() and nn_load_model_memory().
 static nn_t *nn_load_model_binary_impl(nn_reader_t *r)
@@ -1875,38 +1906,13 @@ fail:
   return NN_ERROR_FILE_WRITE;
 }
 
-// Loads a neural-net model from an "inplace"-format buffer (magic "NNP1",
-// written by nn_save_model_inplace()) with zero-copy weight/bias aliasing:
-// nn->weight/nn->bias (float models) or nn->weight_quantized/nn->weight_scale/
-// nn->bias_quantized (quantized models) point directly into `data` instead
-// of being copied into freshly malloc'd RAM. This is the entry point meant
-// for microcontroller targets where the model lives in flash and RAM is
-// tight: the dominant cost -- the weight matrices -- never gets duplicated
-// into RAM at all.
-//
-// Requirements on `data`:
-//  - It must stay valid and UNCHANGED for as long as the returned nn_t is
-//    used -- typically forever, since it is normally a `static const
-//    uint8_t[]` baked into flash. This is unlike nn_load_model_memory(),
-//    which copies everything and only needs `data` valid for the call.
-//  - It should be at least 4-byte aligned (true of any ordinary `const
-//    uint8_t[]` in practice). Every field in this format sits at a
-//    4-byte-aligned offset from the start of `data` (see the layout comment
-//    above nn_save_model_inplace()), so a 4-byte-aligned `data` keeps every
-//    aliased float/int32 access aligned too -- required on some
-//    microcontroller cores (e.g. Cortex-M0), which fault on unaligned word
-//    accesses.
-//
-// The returned model is read-only: nn_train(), nn_quantize(), nn_dequantize(),
-// nn_remove_neuron(), and nn_prune_lightest_neuron() all refuse to run
-// against it (nn->immutable is set to true), since each would need to
-// write through the aliased pointers above. Use nn_predict()/nn_error() for
-// inference. Release it with nn_free() as usual -- nn_free() checks
-// immutable to know it must not free those aliased pointers, only
-// the small bookkeeping this function allocates itself (layer_type/width/
-// activation/config, the top-level pointer arrays, and per-layer
-// neuron/preact activation buffers).
-nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
+// Shared by nn_load_model_inplace() (copy == false: zero-copy, aliased,
+// immutable) and nn_load_model_inplace_copy() (copy == true: everything
+// copied into freshly owned, mutable allocations -- same relationship as
+// nn_load_model_binary() vs. nn_load_model_memory(), just for the inplace
+// format instead of the regular binary one). See the comments on those two
+// public functions for what each mode is for.
+static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool copy)
 {
   if (!data)
     return NULL;
@@ -1929,7 +1935,7 @@ nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
   nn->version_minor = (uint8_t)(version >> 16);
   nn->version_patch = (uint8_t)(version >> 8);
   nn->version_build = (uint8_t)version;
-  nn->immutable = true;
+  nn->immutable = !copy;
   nn->depth = 0; // Only set to `depth` once every array below is allocated (see comment there)
   nn->layer_type = NULL; nn->width = NULL; nn->activation = NULL; nn->config = NULL;
   nn->neuron = NULL; nn->loss = NULL; nn->preact = NULL;
@@ -2023,49 +2029,147 @@ nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
 
   // Per-layer activation buffers (owned, small) and weight/bias data (for
   // everything but LAYER_TYPE_POOL/LAYER_TYPE_DROPOUT, which have neither):
-  // aliased directly into `data` -- this loop never calls malloc() for
-  // weight/weight_quantized/weight_scale/bias/bias_quantized.
+  // aliased directly into `data` when copy == false, or allocated fresh and
+  // copied out of it when copy == true (see nn_reader_obtain()) -- either
+  // way, this loop never calls malloc() for weight/weight_quantized/
+  // weight_scale/bias/bias_quantized itself.
   for (uint32_t L = 1; L < depth; L++) {
     nn->neuron[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
     nn->preact[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
     if (!nn->neuron[L] || !nn->preact[L])
       goto fail;
-    // loss[L], pool_argmax[L], and dropout_scale[L] stay NULL: nn_predict()/
-    // nn_error() (the only operations a read-only model supports) never
-    // touch them -- only backprop would, and that's refused via immutable
-    // above.
-    if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT)
+    if (copy) {
+      // A mutable model needs loss[L] the moment it's ever trained at all
+      // (its own contents don't need pre-initializing -- nn_train()'s
+      // backward pass always overwrites every element before reading it --
+      // but the array itself must exist): the output layer is written
+      // directly, and every hidden layer is written by the backprop loop,
+      // on every single nn_train() call. nn_add_layer() always allocates
+      // this for every layer too.
+      nn->loss[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
+      if (!nn->loss[L])
+        goto fail;
+    }
+    if (nn->layer_type[L] == LAYER_TYPE_POOL) {
+      // Only MAX/MIN pooling's backward pass (nn_pool_backward()) reads
+      // pool_argmax, and it does so unconditionally (unlike the forward
+      // write side, nn_pool_forward(), which is NULL-guarded) -- match
+      // nn_add_layer()'s allocation exactly (only for MAX/MIN, never for
+      // AVG), or a mutable copy with MAX/MIN pooling would crash the
+      // first time it's ever trained.
+      if (copy) {
+        pool_t *p = nn->config[L];
+        if (p->pooling_type == POOLING_TYPE_MAX || p->pooling_type == POOLING_TYPE_MIN) {
+          nn->pool_argmax[L] = (int *)malloc((size_t)nn->width[L] * sizeof(int));
+          if (!nn->pool_argmax[L])
+            goto fail;
+        }
+      }
       continue;
+    }
+    if (nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
+      // Unlike weight_adj/pool_argmax above, nn_dropout_forward() writes
+      // into dropout_scale[L] unconditionally the moment a mutable model
+      // is ever trained at all (not lazily on first actual use) -- so this
+      // has to be allocated up front too, matching nn_add_layer().
+      if (copy) {
+        nn->dropout_scale[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
+        if (!nn->dropout_scale[L])
+          goto fail;
+      }
+      continue;
+    }
     int rows, row_len, bias_count;
     quantized_layer_shape(nn, (int)L, &rows, &row_len, &bias_count);
-    const void *block;
+    void *block;
     if (nn->quantized) {
-      if (!nn_reader_alias_padded(&r, &block, sizeof(float) * (size_t)rows))
+      if (!nn_reader_obtain(&r, &block, sizeof(float) * (size_t)rows, copy))
         goto fail;
       nn->weight_scale[L] = (float *)block;
-      if (!nn_reader_alias_padded(&r, &block, sizeof(int8_t) * (size_t)rows * row_len))
+      if (!nn_reader_obtain(&r, &block, sizeof(int8_t) * (size_t)rows * row_len, copy))
         goto fail;
       nn->weight_quantized[L] = (int8_t *)block;
       float bias_scale;
       if (!nn_reader_read_padded(&r, &bias_scale, sizeof(bias_scale)))
         goto fail;
       nn->bias_scale[L] = bias_scale;
-      if (!nn_reader_alias_padded(&r, &block, sizeof(int8_t) * (size_t)bias_count))
+      if (!nn_reader_obtain(&r, &block, sizeof(int8_t) * (size_t)bias_count, copy))
         goto fail;
       nn->bias_quantized[L] = (int8_t *)block;
     } else {
-      if (!nn_reader_alias_padded(&r, &block, sizeof(float) * (size_t)rows * row_len))
+      if (!nn_reader_obtain(&r, &block, sizeof(float) * (size_t)rows * row_len, copy))
         goto fail;
       nn->weight[L] = (float *)block;
-      if (!nn_reader_alias_padded(&r, &block, sizeof(float) * (size_t)bias_count))
+      if (!nn_reader_obtain(&r, &block, sizeof(float) * (size_t)bias_count, copy))
         goto fail;
       nn->bias[L] = (float *)block;
+      if (copy) {
+        // A mutable model needs a real (if initially zeroed) weight_adj to
+        // train, quantize, or dequantize -- nn_add_layer() always allocates
+        // it too; the immutable/aliased mode above leaves it NULL forever
+        // since nothing is allowed to write to it there.
+        nn->weight_adj[L] = (float *)calloc((size_t)rows * row_len, sizeof(float));
+        if (!nn->weight_adj[L])
+          goto fail;
+      }
     }
   }
   return nn;
 fail:
   nn_free(nn);
   return NULL;
+}
+
+// Loads a neural-net model from an "inplace"-format buffer (magic "NNP1",
+// written by nn_save_model_inplace()) with zero-copy weight/bias aliasing:
+// nn->weight/nn->bias (float models) or nn->weight_quantized/nn->weight_scale/
+// nn->bias_quantized (quantized models) point directly into `data` instead
+// of being copied into freshly malloc'd RAM. This is the entry point meant
+// for microcontroller targets where the model lives in flash and RAM is
+// tight: the dominant cost -- the weight matrices -- never gets duplicated
+// into RAM at all.
+//
+// Requirements on `data`:
+//  - It must stay valid and UNCHANGED for as long as the returned nn_t is
+//    used -- typically forever, since it is normally a `static const
+//    uint8_t[]` baked into flash. This is unlike nn_load_model_memory(),
+//    which copies everything and only needs `data` valid for the call.
+//  - It should be at least 4-byte aligned (true of any ordinary `const
+//    uint8_t[]` in practice). Every field in this format sits at a
+//    4-byte-aligned offset from the start of `data` (see the layout comment
+//    above nn_save_model_inplace()), so a 4-byte-aligned `data` keeps every
+//    aliased float/int32 access aligned too -- required on some
+//    microcontroller cores (e.g. Cortex-M0), which fault on unaligned word
+//    accesses.
+//
+// The returned model is read-only: nn_train(), nn_quantize(), nn_dequantize(),
+// nn_remove_neuron(), and nn_prune_lightest_neuron() all refuse to run
+// against it (nn->immutable is set to true), since each would need to
+// write through the aliased pointers above. Use nn_predict()/nn_error() for
+// inference. Release it with nn_free() as usual -- nn_free() checks
+// immutable to know it must not free those aliased pointers, only
+// the small bookkeeping this function allocates itself (layer_type/width/
+// activation/config, the top-level pointer arrays, and per-layer
+// neuron/preact activation buffers).
+nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
+{
+  return nn_load_model_inplace_impl(data, size, false);
+}
+
+// Loads a neural-net model from an "inplace"-format buffer the same way
+// nn_load_model_inplace() does, except every weight/bias array is copied
+// into a freshly owned allocation instead of aliased -- a normal, fully
+// mutable model (nn->immutable is false), usable with nn_train(),
+// nn_quantize(), nn_dequantize(), nn_remove_neuron(), and
+// nn_prune_lightest_neuron(), at the cost of the RAM copy
+// nn_load_model_inplace() exists to avoid. Intended for tools that need to
+// modify an inplace-format model (e.g. quantize/dequantize converting one
+// in place) rather than just run inference against it. Unlike
+// nn_load_model_inplace(), `data` only needs to stay valid for the
+// duration of this call, same as nn_load_model_memory().
+nn_t *nn_load_model_inplace_copy(const uint8_t *data, size_t size)
+{
+  return nn_load_model_inplace_impl(data, size, true);
 }
 
 // Saves a neural net model to a file.
@@ -2247,6 +2351,23 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
   }
   fclose(file);
   return NN_ERROR_NONE;
+}
+
+// Peeks a model file's first few bytes to report which format it's in
+// (see nn_model_format_t in nn.h), without loading the model.
+nn_model_format_t nn_model_format(const char *path)
+{
+  FILE *file = fopen(path, "rb");
+  if (!file)
+    return NN_MODEL_FORMAT_UNKNOWN;
+  uint8_t magic[4]; // NN_BINARY_MAGIC_LEN == NN_INPLACE_MAGIC_LEN == 4
+  size_t n = fread(magic, 1, sizeof(magic), file);
+  fclose(file);
+  if (n == NN_BINARY_MAGIC_LEN && memcmp(magic, NN_BINARY_MAGIC, NN_BINARY_MAGIC_LEN) == 0)
+    return NN_MODEL_FORMAT_BINARY;
+  if (n == NN_INPLACE_MAGIC_LEN && memcmp(magic, NN_INPLACE_MAGIC, NN_INPLACE_MAGIC_LEN) == 0)
+    return NN_MODEL_FORMAT_INPLACE;
+  return NN_MODEL_FORMAT_ASCII;
 }
 
 // Loads a model file, auto-detecting ascii vs. binary by peeking for the

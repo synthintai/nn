@@ -75,8 +75,35 @@ int main(int argc, char *argv[]) {
     data_free(train_data);
     return 1;
   }
-  // Attempt to load an existing model
-  nn = nn_load_model((char *)model_path);
+  // Attempt to load an existing model. nn_load_model() already auto-detects
+  // ascii vs. binary, but the inplace format needs a mutable model to keep
+  // training (nn_train() refuses to run on the read-only model
+  // nn_load_model_inplace() itself would produce -- its weight arrays are
+  // aliased into the input buffer, not owned), so use
+  // nn_load_model_inplace_copy() instead when nn_model_format() reports
+  // that's what the file is; that copies the weights into normal owned
+  // allocations, so the buffer can be freed right after loading. As with
+  // the ascii/binary case below, any load failure here (missing file,
+  // corrupt file, whatever) just falls through to creating a new model,
+  // rather than being treated as a distinct hard error.
+  nn_model_format_t existing_format = nn_model_format(model_path);
+  if (existing_format == NN_MODEL_FORMAT_INPLACE) {
+    nn = NULL;
+    FILE *file = fopen(model_path, "rb");
+    if (file) {
+      fseek(file, 0, SEEK_END);
+      long size = ftell(file);
+      fseek(file, 0, SEEK_SET);
+      uint8_t *buf = size > 0 ? (uint8_t *)malloc((size_t)size) : NULL;
+      if (buf && fread(buf, 1, (size_t)size, file) == (size_t)size) {
+        nn = nn_load_model_inplace_copy(buf, (size_t)size);
+      }
+      fclose(file);
+      free(buf);
+    }
+  } else {
+    nn = nn_load_model((char *)model_path);
+  }
   bool resuming = (nn != NULL);
   if (nn == NULL) {
     printf("Creating new model.\n");
@@ -197,8 +224,21 @@ int main(int argc, char *argv[]) {
       // Only persist the best-so-far model, not every epoch's -- a later
       // epoch may already be more overfit (see the training-log discussion
       // that motivated early stopping) despite training error still
-      // falling.
-      nn_save_model(nn, (char *)model_path);
+      // falling. When resuming an existing model, save back in the same
+      // format it was loaded from (ascii/binary/inplace) rather than
+      // picking by file extension, so continuing to train an inplace model
+      // doesn't silently convert it to a different format; a brand-new
+      // model has no existing format to preserve, so it keeps the
+      // extension-based default (nn_save_model()).
+      if (resuming && existing_format == NN_MODEL_FORMAT_INPLACE) {
+        nn_save_model_inplace(nn, (char *)model_path);
+      } else if (resuming && existing_format == NN_MODEL_FORMAT_BINARY) {
+        nn_save_model_binary(nn, (char *)model_path);
+      } else if (resuming && existing_format == NN_MODEL_FORMAT_ASCII) {
+        nn_save_model_ascii(nn, (char *)model_path);
+      } else {
+        nn_save_model(nn, (char *)model_path);
+      }
     } else {
       epochs_since_improvement++;
       if (epochs_since_improvement >= EARLY_STOPPING_PATIENCE) {

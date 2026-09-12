@@ -60,8 +60,8 @@ typedef enum {
 typedef enum {
   LAYER_TYPE_NONE = 0,
   LAYER_TYPE_FC,         // Fully Connected Network Layer
-  LAYER_TYPE_CNN,        // Convolutional Neural Network Layer - Not yet implemented
-  LAYER_TYPE_POOL,       // Pooling Layer - Not yet implemented
+  LAYER_TYPE_CNN,        // Convolutional Neural Network Layer
+  LAYER_TYPE_POOL,       // Pooling Layer
   LAYER_TYPE_LSTM,       // Long Short-Term Memory Layer - Not yet implemented
   LAYER_TYPE_GRU,        // Gated Recurrent Unit Layer - Not yet implemented
   LAYER_TYPE_RNN,        // Recurrent Neural Network Layer - Not yet implemented

@@ -152,6 +152,10 @@ Licensed under the [Apache License 2.0](./LICENSE).
 ## TODO
 
 * Add auto-prune feature (to include cyclic training / pruning to achieve a desired minimum accuracy)
-* Add RNN feature
+* Add Recurrent Neural Network Layer (RNN) layer type
 * Implement softmax layer
 * Run cppcheck and fix all errors and warnings from static analysis
+* Add Long Short-Term Memory (LSTM) layer type
+* Add Gated Recurrent Unit (GRU) layer type
+* Add Attention layer type
+* Add Transformer layer type

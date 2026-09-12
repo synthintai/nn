@@ -111,9 +111,11 @@ The model can be saved in either of two formats:
 
 For targets with no filesystem, `nn_load_model_memory(data, size)` parses that same binary format directly out of a caller-supplied buffer (e.g. a model baked into flash as a byte array on a microcontroller) instead of reading from a file, with no `FILE*`/`fopen` dependency. It copies the model into its own allocations, so `data` only needs to stay valid for the duration of the call.
 
+* **Inplace** - a third format (magic `NNP1`), written by `nn_save_model_inplace()` and read back with zero copy by `nn_load_model_inplace(data, size)`: instead of parsing weights/biases into freshly malloc'd RAM, the returned model's weight (or weight_quantized) and bias (or bias_quantized) arrays point directly into the caller's buffer. This is the format for microcontroller targets where RAM, not flash, is the tight resource -- the buffer (typically a `static const uint8_t[]` baked into flash) must stay valid for as long as the model is used, and the model it produces is read-only: `nn_train()`, `nn_quantize()`, `nn_dequantize()`, `nn_remove_neuron()`, and `nn_prune_lightest_neuron()` all refuse to run against it. Use `nn_predict()`/`nn_error()` for inference as usual, and release it with `nn_free()` as usual -- it knows not to free the aliased buffers.
+
 ## Integration
 
-To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference. `nn_load_model_memory()` (see above) is the entry point intended for microcontroller-class inference-only use.
+To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference. For microcontroller-class inference-only use, nn_load_model_inplace() (see Model File Format above) is the intended entry point: it runs inference directly out of a flash-resident model with no RAM copy of the weights; `nn_load_model_memory()` is the fallback when the model instead needs to be copied into (and is free to be modified/replaced in) RAM.
 
 ## License
 

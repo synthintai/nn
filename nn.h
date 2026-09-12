@@ -38,7 +38,8 @@ typedef enum {
   NN_ERROR_DEQUANTIZATION = -16,        // Error during dequantization
   NN_ERROR_TRAINING = -17,              // Error during training
   NN_ERROR_PREDICTION = -18,            // Error during prediction
-  NN_ERROR_UNKNOWN = -19                // Unknown error
+  NN_ERROR_UNKNOWN = -19,               // Unknown error
+  NN_ERROR_READ_ONLY_MODEL = -20        // Attempted to mutate a model loaded with nn_load_model_inplace()
 } nn_error_t;
 
 typedef enum {
@@ -142,6 +143,14 @@ typedef struct {
   float **bias;           // Bias for each neuron
   int8_t **bias_quantized;// Quantized bias for each neuron
   int **pool_argmax;      // Per POOL-MAX/MIN layer: winning input index for each output neuron (NULL otherwise)
+  // True only for a model returned by nn_load_model_inplace(): weight,
+  // weight_quantized, weight_scale, and bias/bias_quantized then point
+  // directly into the caller's (read-only, e.g. flash-resident) buffer
+  // instead of owned heap allocations. nn_free() checks this to know which
+  // per-layer buffers it must NOT free, and nn_train()/nn_quantize()/
+  // nn_dequantize()/nn_remove_neuron()/nn_prune_lightest_neuron() check it to
+  // refuse to write through those pointers. Never set this yourself.
+  bool weights_in_flash;
 } nn_t;
 
 uint32_t nn_version(void);
@@ -157,6 +166,19 @@ nn_t *nn_load_model_binary(const char *path);
 // filesystem) instead of from a file. See the comment above its definition
 // in nn.c for buffer-lifetime and inference-only usage notes.
 nn_t *nn_load_model_memory(const uint8_t *data, size_t size);
+// Writes a neural-net model in the "inplace" format (magic "NNP1"): a
+// zero-copy-friendly variant of the binary format, meant to be paired with
+// nn_load_model_inplace(). See the comment above that function's definition
+// in nn.c for the full format layout and rationale.
+nn_error_t nn_save_model_inplace(nn_t *nn, const char *path);
+// Loads a model from an "inplace"-format buffer with zero-copy weight/bias
+// aliasing directly into `data` -- no RAM copy of the (dominant) weight
+// arrays -- instead of parsing them into freshly malloc'd storage like
+// nn_load_model_memory() does. Intended for microcontroller targets where
+// the model lives in flash and RAM is tight. See the comment above its
+// definition in nn.c for buffer-lifetime, alignment, and read-only usage
+// requirements.
+nn_t *nn_load_model_inplace(const uint8_t *data, size_t size);
 // Loads a model file, auto-detecting ascii vs. binary from the binary
 // format's magic number -- use this instead of nn_load_model_{ascii,binary}
 // when the caller doesn't know (or care) which format a model file is in.

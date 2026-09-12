@@ -13,7 +13,7 @@
 #include "data_prep.h"
 #include "nn.h"
 
-#define TARGET_VALIDATION_ERROR 0.02
+#define TARGET_VALIDATION_ERROR 0.01
 
 int main(int argc, char *argv[]) {
   if (argc != 2) {

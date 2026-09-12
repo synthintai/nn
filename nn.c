@@ -24,6 +24,12 @@
 #define NN_BINARY_MAGIC_LEN 4
 static const uint8_t NN_BINARY_MAGIC[NN_BINARY_MAGIC_LEN] = {'N', 'N', 'B', '1'};
 
+// First 4 bytes of every "inplace"-format model (see nn_load_model_inplace()),
+// distinct from NN_BINARY_MAGIC above so the two formats can never be
+// confused for one another.
+#define NN_INPLACE_MAGIC_LEN 4
+static const uint8_t NN_INPLACE_MAGIC[NN_INPLACE_MAGIC_LEN] = {'N', 'N', 'P', '1'};
+
 typedef float (*activation_function_t)(float a, bool derivative);
 
 // Null activation function
@@ -458,6 +464,7 @@ nn_t *nn_init(void)
   nn->bias_quantized = NULL;
   nn->bias_scale = NULL;
   nn->pool_argmax = NULL;
+  nn->weights_in_flash = false;
   return nn;
 }
 
@@ -471,10 +478,15 @@ void nn_free(nn_t *nn)
     for (int layer = 1; layer < (int)nn->depth; layer++) {
       // weight/weight_adj are each one flat buffer per layer (or NULL for
       // POOL); free(NULL) is a no-op so this is safe uniformly across
-      // every layer type.
-      free(nn->weight[layer]);
+      // every layer type. Except: for a model loaded with
+      // nn_load_model_inplace(), weight[layer]/bias[layer] alias the
+      // caller's buffer instead of being owned allocations -- freeing them
+      // would be undefined behavior, so weights_in_flash gates those two.
+      if (!nn->weights_in_flash) {
+        free(nn->weight[layer]);
+        free(nn->bias[layer]);
+      }
       free(nn->weight_adj[layer]);
-      free(nn->bias[layer]);
       free(nn->weight_scale[layer]);
       free(nn->config[layer]);
       free(nn->neuron[layer]);
@@ -503,7 +515,10 @@ void nn_free(nn_t *nn)
       // through reading a quantized file can leave weight_quantized (and
       // its siblings) already torn down and NULLed by the caller, in which
       // case there's nothing left here to index into.
-      if (nn->weight_quantized) {
+      // As above (float-side comment), weight_quantized[layer]/
+      // weight_scale[layer]/bias_quantized[layer] alias the caller's buffer
+      // for a model loaded with nn_load_model_inplace() and must not be freed.
+      if (nn->weight_quantized && !nn->weights_in_flash) {
         free(nn->weight_quantized[layer]);
         free(nn->weight_scale[layer]);
         free(nn->bias_quantized[layer]);
@@ -733,6 +748,13 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
   int i, j, k;
   float err;
 
+  if (nn->weights_in_flash) {
+    // A model loaded with nn_load_model_inplace() has its weights aliased
+    // into the caller's (typically flash-resident, read-only) buffer --
+    // there is nothing writable here for gradient descent to update.
+    fprintf(stderr, "nn_train: cannot train a read-only, flash-resident model loaded with nn_load_model_inplace()\n");
+    return NAN;
+  }
   if (nn->quantized) {
     // Cannot train a quantized network, so convert to a floating point model first.
     nn_dequantize(nn);
@@ -1170,6 +1192,57 @@ static bool nn_reader_read(nn_reader_t *r, void *dst, size_t n)
   return true;
 }
 
+// Advances a reader past `n` bytes without copying them. Used only for
+// skipping the "inplace" format's alignment padding (see nn_load_model_inplace()),
+// where the skipped bytes themselves are never meaningful.
+static bool nn_reader_skip(nn_reader_t *r, size_t n)
+{
+  if (r->file)
+    return fseek(r->file, (long)n, SEEK_CUR) == 0;
+  if (n > r->buf_len - r->buf_pos)
+    return false;
+  r->buf_pos += n;
+  return true;
+}
+
+// Reads `n` bytes into `dst` (copying, like nn_reader_read()), then skips
+// forward to the next 4-byte boundary -- the padding nn_save_model_inplace()
+// writes after every field so the fields that follow (in particular, the
+// blocks nn_reader_alias_padded() below hands back as raw pointers) always
+// start 4-byte aligned relative to the start of the buffer.
+static bool nn_reader_read_padded(nn_reader_t *r, void *dst, size_t n)
+{
+  if (!nn_reader_read(r, dst, n))
+    return false;
+  size_t pad = (4 - (n % 4)) % 4;
+  return pad == 0 || nn_reader_skip(r, pad);
+}
+
+// Hands back a pointer to the next `n` bytes of a memory-backed reader
+// without copying them, advancing the read position past them; false if
+// fewer than n bytes remain. Only valid for memory-backed readers (r->file
+// must be NULL) -- a FILE*-backed stream has no stable address to alias.
+// This is what gives nn_load_model_inplace() its zero-copy weight/bias
+// arrays: the returned pointer aliases directly into the caller's buffer.
+static bool nn_reader_alias(nn_reader_t *r, const void **out, size_t n)
+{
+  if (r->file || n > r->buf_len - r->buf_pos)
+    return false;
+  *out = r->buf + r->buf_pos;
+  r->buf_pos += n;
+  return true;
+}
+
+// Same as nn_reader_alias(), but also skips the trailing alignment padding
+// (see nn_reader_read_padded() above).
+static bool nn_reader_alias_padded(nn_reader_t *r, const void **out, size_t n)
+{
+  if (!nn_reader_alias(r, out, n))
+    return false;
+  size_t pad = (4 - (n % 4)) % 4;
+  return pad == 0 || nn_reader_skip(r, pad);
+}
+
 // Parses the binary model format described at the top of nn_save_model_binary()
 // from `r`. Common to both nn_load_model_binary() and nn_load_model_memory().
 static nn_t *nn_load_model_binary_impl(nn_reader_t *r)
@@ -1370,6 +1443,294 @@ nn_t *nn_load_model_memory(const uint8_t *data, size_t size)
     return NULL;
   nn_reader_t r = {.buf = data, .buf_len = size};
   return nn_load_model_binary_impl(&r);
+}
+
+// Writes `n` bytes from `data`, then zero-pads to the next 4-byte boundary --
+// the write-side counterpart of nn_reader_read_padded()/nn_reader_alias_padded(),
+// used by nn_save_model_inplace() to keep every field in the "inplace"
+// format aligned.
+static bool nn_write_padded(FILE *file, const void *data, size_t n)
+{
+  if (n && fwrite(data, 1, n, file) != n)
+    return false;
+  size_t pad = (4 - (n % 4)) % 4;
+  if (pad) {
+    static const uint8_t zeros[4] = {0, 0, 0, 0};
+    if (fwrite(zeros, 1, pad, file) != pad)
+      return false;
+  }
+  return true;
+}
+
+// Writes a neural-net model in the "inplace" format (magic "NNP1"): a
+// variant of the binary format tailored for nn_load_model_inplace()'s
+// zero-copy loading. Every field is written at an offset that is a multiple
+// of 4 bytes from the start of the file (fixed-size fields are themselves
+// always a multiple of 4 bytes; the variable-length int8 arrays in a
+// quantized model are zero-padded up to the next 4-byte boundary
+// immediately after being written), and each layer's weight/bias data (or
+// weight_scale/weight_quantized/bias_scale/bias_quantized data, for a
+// quantized model) is written out contiguously, exactly matching the
+// in-memory layout nn->weight[layer]/nn->bias[layer] (etc.) already use --
+// see the comment on those fields in nn.h. That lets nn_load_model_inplace()
+// simply alias a pointer into the middle of its input buffer for each of
+// those arrays instead of parsing/copying them.
+//
+// Layout:
+//   magic[4]                "NNP1"
+//   uint32_t quantized_flag  0 or 1
+//   uint32_t version         (major<<24)|(minor<<16)|(patch<<8)|build
+//   uint32_t depth
+//   -- per layer i in [0, depth): --
+//     uint32_t layer_type
+//     uint32_t width
+//     uint32_t activation
+//     cnn_t config            (only if layer_type == LAYER_TYPE_CNN)
+//     pool_t config           (only if layer_type == LAYER_TYPE_POOL)
+//   -- per layer L in [1, depth), skipped entirely for LAYER_TYPE_POOL: --
+//     if quantized:
+//       float weight_scale[rows]
+//       int8_t weight_quantized[rows * row_len]
+//       float bias_scale                          (one scale for the whole layer)
+//       int8_t bias_quantized[bias_count]
+//     else:
+//       float weight[rows * row_len]
+//       float bias[bias_count]
+// (every field above is individually 4-byte-padded; rows/row_len/bias_count
+// per layer are exactly quantized_layer_shape()'s output)
+nn_error_t nn_save_model_inplace(nn_t *nn, const char *path)
+{
+  if (!nn)
+    return NN_ERROR_INVALID_ARGUMENT;
+  FILE *file = fopen(path, "wb");
+  if (!file)
+    return NN_ERROR_FILE_WRITE;
+  uint32_t qflag = nn->quantized ? 1 : 0;
+  uint32_t version = ((uint32_t)nn->version_major << 24) | ((uint32_t)nn->version_minor << 16) |
+                      ((uint32_t)nn->version_patch << 8) | (uint32_t)nn->version_build;
+  uint32_t depth = nn->depth;
+  if (!nn_write_padded(file, NN_INPLACE_MAGIC, NN_INPLACE_MAGIC_LEN) ||
+      !nn_write_padded(file, &qflag, sizeof(qflag)) ||
+      !nn_write_padded(file, &version, sizeof(version)) ||
+      !nn_write_padded(file, &depth, sizeof(depth)))
+    goto fail;
+  for (uint32_t i = 0; i < depth; i++) {
+    uint32_t layer_type = nn->layer_type[i];
+    uint32_t width = nn->width[i];
+    uint32_t activation = nn->activation[i];
+    if (!nn_write_padded(file, &layer_type, sizeof(layer_type)) ||
+        !nn_write_padded(file, &width, sizeof(width)) ||
+        !nn_write_padded(file, &activation, sizeof(activation)))
+      goto fail;
+    if (layer_type == LAYER_TYPE_CNN) {
+      if (!nn_write_padded(file, nn->config[i], sizeof(cnn_t)))
+        goto fail;
+    } else if (layer_type == LAYER_TYPE_POOL) {
+      if (!nn_write_padded(file, nn->config[i], sizeof(pool_t)))
+        goto fail;
+    }
+  }
+  for (uint32_t L = 1; L < depth; L++) {
+    if (nn->layer_type[L] == LAYER_TYPE_POOL)
+      continue;
+    int rows, row_len, bias_count;
+    quantized_layer_shape(nn, (int)L, &rows, &row_len, &bias_count);
+    if (nn->quantized) {
+      if (!nn_write_padded(file, nn->weight_scale[L], sizeof(float) * (size_t)rows) ||
+          !nn_write_padded(file, nn->weight_quantized[L], sizeof(int8_t) * (size_t)rows * row_len) ||
+          !nn_write_padded(file, &nn->bias_scale[L], sizeof(float)) ||
+          !nn_write_padded(file, nn->bias_quantized[L], sizeof(int8_t) * (size_t)bias_count))
+        goto fail;
+    } else {
+      if (!nn_write_padded(file, nn->weight[L], sizeof(float) * (size_t)rows * row_len) ||
+          !nn_write_padded(file, nn->bias[L], sizeof(float) * (size_t)bias_count))
+        goto fail;
+    }
+  }
+  fclose(file);
+  return NN_ERROR_NONE;
+fail:
+  fclose(file);
+  return NN_ERROR_FILE_WRITE;
+}
+
+// Loads a neural-net model from an "inplace"-format buffer (magic "NNP1",
+// written by nn_save_model_inplace()) with zero-copy weight/bias aliasing:
+// nn->weight/nn->bias (float models) or nn->weight_quantized/nn->weight_scale/
+// nn->bias_quantized (quantized models) point directly into `data` instead
+// of being copied into freshly malloc'd RAM. This is the entry point meant
+// for microcontroller targets where the model lives in flash and RAM is
+// tight: the dominant cost -- the weight matrices -- never gets duplicated
+// into RAM at all.
+//
+// Requirements on `data`:
+//  - It must stay valid and UNCHANGED for as long as the returned nn_t is
+//    used -- typically forever, since it is normally a `static const
+//    uint8_t[]` baked into flash. This is unlike nn_load_model_memory(),
+//    which copies everything and only needs `data` valid for the call.
+//  - It should be at least 4-byte aligned (true of any ordinary `const
+//    uint8_t[]` in practice). Every field in this format sits at a
+//    4-byte-aligned offset from the start of `data` (see the layout comment
+//    above nn_save_model_inplace()), so a 4-byte-aligned `data` keeps every
+//    aliased float/int32 access aligned too -- required on some
+//    microcontroller cores (e.g. Cortex-M0), which fault on unaligned word
+//    accesses.
+//
+// The returned model is read-only: nn_train(), nn_quantize(), nn_dequantize(),
+// nn_remove_neuron(), and nn_prune_lightest_neuron() all refuse to run
+// against it (nn->weights_in_flash is set to true), since each would need to
+// write through the aliased pointers above. Use nn_predict()/nn_error() for
+// inference. Release it with nn_free() as usual -- nn_free() checks
+// weights_in_flash to know it must not free those aliased pointers, only
+// the small bookkeeping this function allocates itself (layer_type/width/
+// activation/config, the top-level pointer arrays, and per-layer
+// neuron/preact activation buffers).
+nn_t *nn_load_model_inplace(const uint8_t *data, size_t size)
+{
+  if (!data)
+    return NULL;
+  nn_reader_t r = {.buf = data, .buf_len = size};
+  uint8_t magic[NN_INPLACE_MAGIC_LEN];
+  if (!nn_reader_read_padded(&r, magic, NN_INPLACE_MAGIC_LEN) ||
+      memcmp(magic, NN_INPLACE_MAGIC, NN_INPLACE_MAGIC_LEN) != 0)
+    return NULL;
+  uint32_t qflag, version, depth;
+  if (!nn_reader_read_padded(&r, &qflag, sizeof(qflag)) ||
+      !nn_reader_read_padded(&r, &version, sizeof(version)) ||
+      !nn_reader_read_padded(&r, &depth, sizeof(depth)))
+    return NULL;
+
+  nn_t *nn = (nn_t *)malloc(sizeof(nn_t));
+  if (!nn)
+    return NULL;
+  nn->quantized = (qflag != 0);
+  nn->version_major = (uint8_t)(version >> 24);
+  nn->version_minor = (uint8_t)(version >> 16);
+  nn->version_patch = (uint8_t)(version >> 8);
+  nn->version_build = (uint8_t)version;
+  nn->weights_in_flash = true;
+  nn->depth = 0; // Only set to `depth` once every array below is allocated (see comment there)
+  nn->layer_type = NULL; nn->width = NULL; nn->activation = NULL; nn->config = NULL;
+  nn->neuron = NULL; nn->loss = NULL; nn->preact = NULL;
+  nn->weight = NULL; nn->weight_adj = NULL; nn->bias = NULL;
+  nn->weight_quantized = NULL; nn->weight_scale = NULL;
+  nn->bias_quantized = NULL; nn->bias_scale = NULL;
+  nn->pool_argmax = NULL;
+
+  // Allocate every top-level array up front, all sized to `depth` and
+  // zeroed, before touching nn->depth: nn_free() indexes every layer <
+  // nn->depth into each of these, so if any allocation below fails, the
+  // nn_free(nn) call sees a fully consistent "empty" (depth still 0) model
+  // instead of a depth that outruns arrays it hasn't allocated yet.
+  //
+  // weight/weight_adj/bias and weight_quantized/bias_quantized are each
+  // allocated on ONE side only, matching nn->quantized -- exactly the
+  // invariant nn_free() (and nn_quantize()/nn_dequantize()) already rely on
+  // elsewhere in this file: a float model never has weight_quantized/
+  // bias_quantized allocated, and a quantized model never has weight/
+  // weight_adj/bias allocated. Allocating both unconditionally would leave
+  // whichever side nn_free()'s matching branch doesn't look at leaked.
+  nn->layer_type = (uint8_t *)calloc(depth, sizeof(*nn->layer_type));
+  nn->width = (uint32_t *)calloc(depth, sizeof(*nn->width));
+  nn->activation = (uint8_t *)calloc(depth, sizeof(*nn->activation));
+  nn->config = (void **)calloc(depth, sizeof(*nn->config));
+  nn->neuron = (float **)calloc(depth, sizeof(*nn->neuron));
+  nn->loss = (float **)calloc(depth, sizeof(*nn->loss));
+  nn->preact = (float **)calloc(depth, sizeof(*nn->preact));
+  nn->weight_scale = (float **)calloc(depth, sizeof(*nn->weight_scale));
+  nn->bias_scale = (float *)calloc(depth, sizeof(*nn->bias_scale));
+  nn->pool_argmax = (int **)calloc(depth, sizeof(*nn->pool_argmax));
+  bool top_level_ok = nn->layer_type && nn->width && nn->activation && nn->config &&
+      nn->neuron && nn->loss && nn->preact && nn->weight_scale && nn->bias_scale && nn->pool_argmax;
+  if (nn->quantized) {
+    nn->weight_quantized = (int8_t **)calloc(depth, sizeof(*nn->weight_quantized));
+    nn->bias_quantized = (int8_t **)calloc(depth, sizeof(*nn->bias_quantized));
+    top_level_ok = top_level_ok && nn->weight_quantized && nn->bias_quantized;
+  } else {
+    nn->weight = (float **)calloc(depth, sizeof(*nn->weight));
+    nn->weight_adj = (float **)calloc(depth, sizeof(*nn->weight_adj));
+    nn->bias = (float **)calloc(depth, sizeof(*nn->bias));
+    top_level_ok = top_level_ok && nn->weight && nn->weight_adj && nn->bias;
+  }
+  if (!top_level_ok) {
+    nn_free(nn);
+    return NULL;
+  }
+  nn->depth = depth;
+
+  // Layer descriptors: layer_type/width/activation/config for every layer,
+  // including layer 0 (INPUT), which -- like the rest of this format's
+  // header -- is small and simply copied rather than aliased.
+  for (uint32_t i = 0; i < depth; i++) {
+    uint32_t layer_type, width, activation;
+    if (!nn_reader_read_padded(&r, &layer_type, sizeof(layer_type)) ||
+        !nn_reader_read_padded(&r, &width, sizeof(width)) ||
+        !nn_reader_read_padded(&r, &activation, sizeof(activation)))
+      goto fail;
+    nn->layer_type[i] = (uint8_t)layer_type;
+    nn->width[i] = width;
+    nn->activation[i] = (uint8_t)activation;
+    if (layer_type == LAYER_TYPE_CNN) {
+      cnn_t *c = (cnn_t *)malloc(sizeof(cnn_t));
+      if (!c || !nn_reader_read_padded(&r, c, sizeof(cnn_t))) {
+        free(c);
+        goto fail;
+      }
+      nn->config[i] = c;
+    } else if (layer_type == LAYER_TYPE_POOL) {
+      pool_t *p = (pool_t *)malloc(sizeof(pool_t));
+      if (!p || !nn_reader_read_padded(&r, p, sizeof(pool_t))) {
+        free(p);
+        goto fail;
+      }
+      nn->config[i] = p;
+    }
+  }
+
+  // Per-layer activation buffers (owned, small) and weight/bias data (for
+  // everything but LAYER_TYPE_POOL, which has neither): aliased directly
+  // into `data` -- this loop never calls malloc() for weight/weight_quantized/
+  // weight_scale/bias/bias_quantized.
+  for (uint32_t L = 1; L < depth; L++) {
+    nn->neuron[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
+    nn->preact[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
+    if (!nn->neuron[L] || !nn->preact[L])
+      goto fail;
+    // loss[L] and pool_argmax[L] stay NULL: nn_predict()/nn_error() (the
+    // only operations a read-only model supports) never touch them -- only
+    // backprop would, and that's refused via weights_in_flash above.
+    if (nn->layer_type[L] == LAYER_TYPE_POOL)
+      continue;
+    int rows, row_len, bias_count;
+    quantized_layer_shape(nn, (int)L, &rows, &row_len, &bias_count);
+    const void *block;
+    if (nn->quantized) {
+      if (!nn_reader_alias_padded(&r, &block, sizeof(float) * (size_t)rows))
+        goto fail;
+      nn->weight_scale[L] = (float *)block;
+      if (!nn_reader_alias_padded(&r, &block, sizeof(int8_t) * (size_t)rows * row_len))
+        goto fail;
+      nn->weight_quantized[L] = (int8_t *)block;
+      float bias_scale;
+      if (!nn_reader_read_padded(&r, &bias_scale, sizeof(bias_scale)))
+        goto fail;
+      nn->bias_scale[L] = bias_scale;
+      if (!nn_reader_alias_padded(&r, &block, sizeof(int8_t) * (size_t)bias_count))
+        goto fail;
+      nn->bias_quantized[L] = (int8_t *)block;
+    } else {
+      if (!nn_reader_alias_padded(&r, &block, sizeof(float) * (size_t)rows * row_len))
+        goto fail;
+      nn->weight[L] = (float *)block;
+      if (!nn_reader_alias_padded(&r, &block, sizeof(float) * (size_t)bias_count))
+        goto fail;
+      nn->bias[L] = (float *)block;
+    }
+  }
+  return nn;
+fail:
+  nn_free(nn);
+  return NULL;
 }
 
 // Saves a neural net model to a file.
@@ -1579,6 +1940,12 @@ nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   if (nn == NULL || layer <= 0 || layer >= (int)nn->depth || neuron_index < 0 || neuron_index >= (int)nn->width[layer]) {
     return NN_ERROR_INVALID_ARGUMENT;
   }
+  if (nn->weights_in_flash) {
+    // Removing a neuron reallocs/shifts weight (or weight_quantized) and
+    // bias in place, which is not possible on buffers aliased into the
+    // caller's (read-only) buffer for a model loaded with nn_load_model_inplace().
+    return NN_ERROR_READ_ONLY_MODEL;
+  }
   // A CNN/POOL layer's width is derived entirely from its cnn_t/pool_t
   // config (spatial dims x channels), not a flat list of independent
   // neurons, and its weight array (if any) isn't neuron-indexed -- there is
@@ -1720,6 +2087,12 @@ bool nn_prune_lightest_neuron(nn_t *nn)
 {
   if (nn == NULL || nn->depth < 2) {
     // Invalid or uninitialized network
+    return false;
+  }
+  if (nn->weights_in_flash) {
+    // nn_remove_neuron() below would refuse anyway, but its return value is
+    // ignored here -- check explicitly so this doesn't silently report
+    // success on a read-only, flash-resident model.
     return false;
   }
   int lightest_layer = -1;
@@ -1892,6 +2265,13 @@ nn_error_t nn_quantize(nn_t *nn)
   if (!nn || nn->quantized) {
     return NN_ERROR_INVALID_ARGUMENT;
   }
+  if (nn->weights_in_flash) {
+    // Quantizing rewrites weight_scale/bias_scale/weight_quantized/bias_quantized
+    // in place, which would require freeing/reallocating buffers aliased
+    // into the caller's (read-only) buffer for a model loaded with
+    // nn_load_model_inplace().
+    return NN_ERROR_READ_ONLY_MODEL;
+  }
   const int depth = (int)nn->depth;
   // Free the float-mode weight_scale/bias_scale placeholders (allocated by
   // nn_add_layer) before replacing them with the real quantized-mode arrays
@@ -1999,6 +2379,12 @@ nn_error_t nn_dequantize(nn_t *nn)
 {
   if (!nn || !nn->quantized) {
     return NN_ERROR_INVALID_ARGUMENT;
+  }
+  if (nn->weights_in_flash) {
+    // As in nn_quantize(): dequantizing rewrites weight/weight_adj/bias and
+    // frees the quantized-side buffers, which are aliased into the caller's
+    // (read-only) buffer for a model loaded with nn_load_model_inplace().
+    return NN_ERROR_READ_ONLY_MODEL;
   }
   const int depth = (int)nn->depth;
   // Allocate top-level float pointers

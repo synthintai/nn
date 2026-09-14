@@ -8,53 +8,61 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "nn.h"
 
 // Must match train_cnn.c's/train_fc.c's num_inputs (28x28, MNIST-style) --
 // both build a model with the same input shape, just a different
-// architecture behind it. This used to be a flat 16x16 (256-element)
-// array, which nn_predict() would over-read past the end of when fed a
-// model built by either's current architecture (784 inputs) --
-// nn_predict() has no way to know the caller's buffer is shorter than
-// model->width[0], so it's on the caller to size it correctly.
+// architecture behind it. nn_predict() has no way to know the caller's
+// buffer is shorter than model->width[0] and would simply read past its
+// end, so it's on the caller to size this correctly.
 #define IMG_SIZE 28
-#define SAMPLE_SIZE 16
 
-// The original 16x16 sample pattern (a rough digit-like blob), unchanged --
-// just centered below into a 28x28, zero-padded canvas instead of used
-// directly, since it's now smaller than what the model expects.
-static const float sample_16x16[SAMPLE_SIZE][SAMPLE_SIZE] = {
-    {0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0},
-    {0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
-    {0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
-    {0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0},
-    {0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0},
-    {0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0},
-    {0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0},
-    {0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0},
-    {0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0},
-    {0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0},
-    {0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0},
-    {0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0},
+// Test data upon which to make a prediction: a rough digit-like blob,
+// centered with a symmetric zero margin, the same way a real MNIST digit
+// sits within its 28x28 frame. Not a real handwritten sample -- just enough
+// structure to exercise the model and see plausible-looking output.
+static const float sample[IMG_SIZE][IMG_SIZE] = {
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 };
 
 int main(int argc, char *argv[]) {
   nn_t *model;
   const char *model_path = (argc > 1) ? argv[1] : "model.txt";
 
-  // Test data upon which to make a prediction: the sample pattern above,
-  // centered in an otherwise-zero IMG_SIZE x IMG_SIZE canvas (symmetric
-  // margin on all sides, same as how a real MNIST digit sits within its
-  // 28x28 frame).
-  float inputs[IMG_SIZE * IMG_SIZE] = {0};
-  const int offset = (IMG_SIZE - SAMPLE_SIZE) / 2;
-  for (int r = 0; r < SAMPLE_SIZE; r++)
-    for (int c = 0; c < SAMPLE_SIZE; c++)
-      inputs[(r + offset) * IMG_SIZE + (c + offset)] = sample_16x16[r][c];
+  // nn_predict() takes a non-const float*, so this needs to be a mutable
+  // copy of `sample` rather than a pointer straight at it (even though
+  // nn_predict() never actually writes through it) -- &sample[0][0] would
+  // silently discard the const qualifier instead.
+  float inputs[IMG_SIZE * IMG_SIZE];
+  memcpy(inputs, sample, sizeof(inputs));
 
   // Recall a previously trained neural network model, inclusive of its
   // weights (ascii, binary, or inplace, auto-detected). The inplace format

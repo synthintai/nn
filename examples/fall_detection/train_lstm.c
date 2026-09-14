@@ -8,20 +8,33 @@
 // Example: training an LSTM layer to continuously monitor a simulated
 // 3-axis accelerometer stream -- the kind of always-on sensor processing a
 // fall-detection wearable or medical-alert pendant does -- and flag a fall
-// as soon as one occurs. Unlike examples/gesture_recognition/train.c's RNN (which classifies one
-// short, fixed-length gesture window with a single label), a fall event
-// here is a multi-phase pattern (a brief free-fall dip, an impact spike,
-// then a long stretch of unusual post-fall stillness) spread across a much
-// longer sequence, and the label VARIES per timestep -- 0 throughout
-// ordinary activity, flipping to 1 at the instant a fall begins and staying
-// 1 for the rest of the monitoring window. Confirming a genuine fall (and
-// not, say, just setting the device down hard) benefits from remembering
-// the free-fall dip once the impact arrives and then watching what happens
-// afterward -- exactly the kind of "hold relevant context, let go of
-// irrelevant context" job LSTM's gated cell state is for, more than a plain
-// RNN's hidden state is (see LAYER_TYPE_LSTM's comment in nn.h). As with
-// examples/gesture_recognition/train.c, every sequence is synthesized on the fly (see
-// fall_data.[ch]) -- there is nothing to download.
+// as soon as one occurs. The LSTM counterpart to train_rnn.c/train_gru.c in
+// this same directory, on the identical task and data, so the three can be
+// compared directly. Unlike examples/gesture_recognition/train.c's RNN
+// (which classifies one short, fixed-length gesture window with a single
+// label), a fall event here is a multi-phase pattern (a brief free-fall
+// dip, an impact spike, then a long stretch of unusual post-fall
+// stillness) spread across a much longer sequence, and the label VARIES
+// per timestep -- 0 throughout ordinary activity, flipping to 1 at the
+// instant a fall begins and staying 1 for the rest of the monitoring
+// window.
+//
+// Confirming a genuine fall (and not, say, just setting the device down
+// hard) benefits from remembering the free-fall dip once the impact
+// arrives and then watching what happens afterward -- exactly the kind of
+// "hold relevant context, let go of irrelevant context" job LSTM's gated
+// cell state is for, more than train_rnn.c's plain hidden state is (see
+// LAYER_TYPE_LSTM's comment in nn.h). Measured against train_rnn.c/
+// train_gru.c on this exact task: all three eventually reach the same
+// ceiling (100% per-timestep accuracy, every fall detected, zero false
+// alarms) -- this synthetic task turns out learnable by a plain RNN too,
+// given enough epochs -- but train_rnn.c consistently needs several times
+// as many epochs to get there. LSTM (this file) and GRU both converge
+// faster and more consistently than that; between the two, this is the
+// more expensive of the two gated options (four gates and two persistent
+// states vs. GRU's three gates and one) -- see train_gru.c's top comment
+// for that cheaper alternative. Every sequence is synthesized on the fly
+// (see fall_data.[ch]) -- there is nothing to download.
 
 #include <float.h>
 #include <math.h>

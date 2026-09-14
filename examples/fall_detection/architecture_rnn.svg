@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1150 470" width="1150" height="470">
+  <title>Fall Detection — RNN (train_rnn.c)</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#374151"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ea580c"/>
+    </marker>
+    <marker id="arrow-pink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#db2777"/>
+    </marker>
+    <marker id="arrow-indigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4f46e5"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1150" height="470" fill="#ffffff"/>
+  <text x="575.0" y="38" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#111827">Fall Detection — RNN (train_rnn.c)</text>
+  <text x="575.0" y="60" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" fill="#6b7280">examples/fall_detection/train_rnn.c</text>
+  <rect x="90" y="250" width="190" height="110" rx="12" fill="#f1f5f9" stroke="#64748b" stroke-width="2"/>
+  <text x="185.0" y="299.0" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2937">Input</text>
+  <text x="185.0" y="321.0" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#1f2937">3 (x, y, z)</text>
+  <rect x="450" y="250" width="190" height="110" rx="12" fill="#ffedd5" stroke="#ea580c" stroke-width="2"/>
+  <text x="545.0" y="299.0" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2937">RNN · tanh</text>
+  <text x="545.0" y="321.0" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#1f2937">16 units</text>
+  <rect x="810" y="250" width="190" height="110" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="905.0" y="299.0" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#1f2937">Output · Sigmoid</text>
+  <text x="905.0" y="321.0" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#1f2937">1 (fall prob.)</text>
+  <line x1="280" y1="305.0" x2="450" y2="305.0" stroke="#374151" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="640" y1="305.0" x2="810" y2="305.0" stroke="#374151" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="725.0" y="230" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#374151">one timestep per call</text>
+  <path d="M 491.8 250 C 491.8 190, 598.2 190, 598.2 250" fill="none" stroke="#ea580c" stroke-width="2.5" marker-end="url(#arrow-orange)"/>
+  <text x="545.0" y="182" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#ea580c">hidden state h, previous timestep</text>
+  <text x="575.0" y="448" text-anchor="middle" font-family="'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#6b7280">nn_reset_state() zeros h between independent monitoring windows</text>
+</svg>

@@ -5,11 +5,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Independently re-evaluates a model saved by train.c against a
-// freshly-synthesized batch of monitoring sequences -- same rationale as
-// examples/gesture_recognition/test.c: nothing about train.c's data is ever persisted to
-// disk, so every sequence generated here is new, unseen by construction,
-// whether or not it happens to resemble something the model trained on.
+// Independently re-evaluates a model saved by train_rnn.c/train_gru.c/
+// train_lstm.c against a freshly-synthesized batch of monitoring sequences
+// (architecture-agnostic, like examples/character_recognition/test.c is for
+// its two training programs -- this just reads whatever the model's
+// input/output widths are) -- same rationale as
+// examples/gesture_recognition/test.c: nothing about any of their training
+// data is ever persisted to disk, so every sequence generated here is new,
+// unseen by construction, whether or not it happens to resemble something
+// the model trained on.
 // Reports the metrics that actually matter for a fall detector (not just
 // raw error): per-timestep accuracy, recall (falls ever detected), false
 // alarms (normal sequences that ever triggered), and average detection
@@ -28,7 +32,7 @@
 int main(int argc, char *argv[]) {
   if (argc != 2) {
     printf("Usage: %s <model-file>\n", argv[0]);
-    printf("  <model-file> : Path to a model saved by train.c (ascii, binary, or inplace)\n");
+    printf("  <model-file> : Path to a model saved by train_rnn.c/train_gru.c/train_lstm.c (ascii, binary, or inplace)\n");
     return 1;
   }
   const char *model_path = argv[1];
@@ -64,7 +68,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   if ((model->width[0] != (uint32_t)NUM_AXES) || (model->width[model->depth - 1] != 1)) {
-    fprintf(stderr, "Error: Model dimensions (%u inputs, %u outputs) don't match the fall-detection task (%d inputs, 1 output) -- is this a train.c model?\n",
+    fprintf(stderr, "Error: Model dimensions (%u inputs, %u outputs) don't match the fall-detection task (%d inputs, 1 output) -- is this a train_rnn.c/train_gru.c/train_lstm.c model?\n",
             model->width[0], model->width[model->depth - 1], NUM_AXES);
     nn_free(model);
     free(inplace_buf);

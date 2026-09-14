@@ -8,7 +8,7 @@ Read in order, they also tell a story: each example needs a little more memory t
 |---|---|---|---|
 | [`character_recognition`](character_recognition/README.md) | CNN *vs.* plain FC (both included, for comparison) | Classify a whole 28×28 image at once -- no memory of anything needed | ~191K (CNN) / ~109K (FC) |
 | [`gesture_recognition`](gesture_recognition/README.md) | RNN | Classify a short (32-timestep) burst of sensor readings -- needs to remember the last second or so | 388 |
-| [`fall_detection`](fall_detection/README.md) | LSTM | Continuously monitor a long (150-timestep) stream and flag a rare event -- needs to remember something brief that happened many steps ago, selectively, without it decaying | 1,297 |
+| [`fall_detection`](fall_detection/README.md) | RNN *vs.* GRU *vs.* LSTM (all three included, for comparison) | Continuously monitor a long (150-timestep) stream and flag a rare event -- needs to remember something brief that happened many steps ago, selectively, without it decaying | 337 (RNN) / 977 (GRU) / 1,297 (LSTM) |
 
 ## [`character_recognition`](character_recognition/README.md)
 
@@ -24,6 +24,6 @@ Classifies a short burst of simulated 3-axis accelerometer readings (STILL / SHA
 
 ## [`fall_detection`](fall_detection/README.md)
 
-<img src="fall_detection/architecture.svg" alt="LSTM architecture diagram" width="420"><br>
+<img src="fall_detection/architecture_lstm.svg" alt="LSTM architecture diagram" width="420"><br>
 
-Continuously monitors a much longer simulated accelerometer stream for a fall -- a fall-detection pendant's actual job. A fall is a multi-phase pattern (free-fall dip, impact spike, then a long stretch of unusual stillness afterward), and confirming it's genuine means remembering the brief early dip across a long, quiet gap. A plain RNN's hidden state tends to wash that signal out over that many steps; `LAYER_TYPE_LSTM`'s gated cell state is built to hold onto it instead -- see this example's own README for the fuller argument.
+Continuously monitors a much longer simulated accelerometer stream for a fall -- a fall-detection pendant's actual job. A fall is a multi-phase pattern (free-fall dip, impact spike, then a long stretch of unusual stillness afterward), and confirming it's genuine means remembering the brief early dip across a long, quiet gap. Trains **three** architectures on identical data -- `train_rnn.c`, `train_gru.c`, `train_lstm.c` -- and measures them honestly rather than assuming gating wins: all three reach the same accuracy ceiling on this task, but the gated ones (GRU, LSTM) get there in reliably fewer training epochs. See this example's own README for the full epoch-count comparison.

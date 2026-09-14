@@ -258,6 +258,15 @@ static void quantized_layer_shape(nn_t *nn, int L, int *rows, int *row_len, int 
     *rows = 4 * (int)nn->width[L];
     *row_len = (int)nn->width[L - 1] + (int)nn->width[L];
     *bias_count = 4 * (int)nn->width[L];
+  } else if (nn->layer_type[L] == LAYER_TYPE_GRU) {
+    // Three gates (reset, update, candidate), each with its own row per
+    // hidden unit -- see LAYER_TYPE_GRU's comment in nn.h and
+    // forward_propagation()'s LAYER_TYPE_GRU case for the row layout and
+    // gate order. Each row is still row_len_in + hidden wide, exactly like
+    // LAYER_TYPE_RNN's single gate and LAYER_TYPE_LSTM's four.
+    *rows = 3 * (int)nn->width[L];
+    *row_len = (int)nn->width[L - 1] + (int)nn->width[L];
+    *bias_count = 3 * (int)nn->width[L];
   } else {
     *rows = (int)nn->width[L];
     *row_len = (int)nn->width[L - 1];
@@ -543,6 +552,49 @@ static void nn_lstm_backward(nn_t *nn, int layer, const float *dh)
   }
 }
 
+// Backward pass for one GRU layer's own internal gates, given `dh` -- the
+// already-gathered incoming gradient dL/dh_t -- the same way
+// nn_lstm_backward() is used (see its comment for the general rationale;
+// this is that same missing piece for GRU's h_t = (1-z_t)*h_prev + z_t*n_t).
+// Writes the three gates' preact-space gradients into
+// nn->gru_gate_grad[layer] (segments: [0,h)=reset, [h,2h)=update,
+// [2h,3h)=candidate), using this timestep's cached gate values
+// (nn->gru_cache[layer]).
+//
+// The candidate gate's recurrent contribution is reset-gated (n_t =
+// tanh(W_n x_t + r_t * (U_n h_prev) + b_n)), which is why
+// nn->gru_cache[layer] also caches n_recur_raw (U_n h_prev, before the
+// reset-gate multiply) -- it's what the reset gate's own gradient (dr_t =
+// dn_preact * n_recur_raw) is computed from, and nn_train()'s
+// weight-adjustment loop needs r_t itself (also cached) to correctly scale
+// the candidate gate's recurrent weight gradients.
+//
+// Truncated BPTT, depth 1 (same simplification as LAYER_TYPE_RNN/LSTM --
+// see their comments in nn.h): only this timestep's own local contribution
+// is computed; nn->gru_cache[layer]'s cached hidden_prev is read as a given
+// constant, and no gradient is propagated into the previous timestep.
+static void nn_gru_backward(nn_t *nn, int layer, const float *dh)
+{
+  const int hidden = (int)nn->width[layer];
+  const float *cache = nn->gru_cache[layer];
+  const float *h_prev = cache + 0 * hidden;
+  const float *gate_r = cache + 1 * hidden;
+  const float *gate_z = cache + 2 * hidden;
+  const float *gate_n = cache + 3 * hidden;
+  const float *n_recur_raw = cache + 4 * hidden;
+  float *grad = nn->gru_gate_grad[layer]; // segments: [0,h)=reset, [h,2h)=update, [2h,3h)=candidate
+
+  for (int j = 0; j < hidden; j++) {
+    float dz = dh[j] * (gate_n[j] - h_prev[j]);                      // dL/d(update gate output)
+    float dn = dh[j] * gate_z[j];                                    // dL/d(candidate output)
+    float dn_preact = dn * (1.0f - gate_n[j] * gate_n[j]);           // through candidate's tanh
+    float dr = dn_preact * n_recur_raw[j];                           // dL/d(reset gate output), via n's r-gating
+    grad[0 * hidden + j] = dr * gate_r[j] * (1.0f - gate_r[j]);      // d(reset gate preact)
+    grad[1 * hidden + j] = dz * gate_z[j] * (1.0f - gate_z[j]);      // d(update gate preact)
+    grad[2 * hidden + j] = dn_preact;                                // d(candidate preact)
+  }
+}
+
 // `training` selects DROPOUT layer behavior: true (only from nn_train())
 // randomly zeroes units (inverted-dropout scaling on the survivors) and
 // caches the per-neuron scale used in nn->dropout_scale for the backward
@@ -798,8 +850,107 @@ static void forward_propagation(nn_t *nn, bool training)
         }
         break;
       case LAYER_TYPE_GRU:
-        // Gated Recurrent Unit Layer
-        // TODO
+        // Gated Recurrent Unit Layer. Like LAYER_TYPE_LSTM, this processes
+        // one timestep per call with state persisted across calls, but with
+        // only ONE state vector -- nn->neuron[i], the hidden state h, same
+        // as LAYER_TYPE_RNN -- and three gates instead of LSTM's four. This
+        // layer's flat weight buffer has 3*hidden rows (see
+        // quantized_layer_shape()): rows [0,hidden) are the reset gate's,
+        // [hidden,2*hidden) the update gate's, [2*hidden,3*hidden) the
+        // candidate gate's -- each row_len = row_len_in + hidden wide,
+        // exactly like LAYER_TYPE_RNN's single gate. Reset/update use a
+        // sigmoid; the candidate uses tanh, with its recurrent contribution
+        // scaled by the reset gate *before* the bias is added:
+        //   r = sigmoid(W_r x + U_r h_prev + b_r)
+        //   z = sigmoid(W_z x + U_z h_prev + b_z)
+        //   n = tanh(W_n x + r * (U_n h_prev) + b_n)
+        //   h_new = (1 - z) * h_prev + z * n
+        // (z close to 1 means "take the new candidate"; z close to 0 means
+        // "keep the old state" -- the single update gate does the job LSTM
+        // splits across separate input/forget gates.)
+        //
+        // nn->gru_cache[i] caches this timestep's previous hidden state and
+        // every gate's activation (needed by nn_train()'s backward pass,
+        // nn_gru_backward(), which runs after this function returns -- by
+        // which point nn->neuron[i] already holds the NEW state) as five
+        // width[i]-wide segments, in this order: hidden_prev, gate_r,
+        // gate_z, gate_n, n_recur_raw (U_n h_prev, cached before the reset
+        // gate multiplies it -- needed for the reset gate's own gradient).
+        {
+          const int row_len_in = (int)nn->width[i - 1];
+          const int hidden = (int)nn->width[i];
+          const int row_len = row_len_in + hidden;
+          float *cache = nn->gru_cache[i];
+          float *h_prev = cache + 0 * hidden;
+          float *gate_r = cache + 1 * hidden;
+          float *gate_z = cache + 2 * hidden;
+          float *gate_n = cache + 3 * hidden;
+          float *n_recur_raw = cache + 4 * hidden;
+          memcpy(h_prev, nn->neuron[i], (size_t)hidden * sizeof(float));
+          // The quantized/float branch is hoisted out per-layer (not
+          // per-gate/per-weight), same rationale as the FC/OUTPUT, RNN, and
+          // LSTM cases above.
+          if (nn->quantized) {
+            for (j = 0; j < hidden; j++) {
+              float pre_r = 0.0f, pre_z = 0.0f, pre_n = 0.0f, n_recur = 0.0f;
+              const int8_t *w_r = nn->weight_quantized[i] + (0 * hidden + j) * row_len;
+              const int8_t *w_z = nn->weight_quantized[i] + (1 * hidden + j) * row_len;
+              const int8_t *w_n = nn->weight_quantized[i] + (2 * hidden + j) * row_len;
+              for (k = 0; k < row_len_in; k++) {
+                float x = nn->neuron[i - 1][k];
+                pre_r += x * (float)w_r[k];
+                pre_z += x * (float)w_z[k];
+                pre_n += x * (float)w_n[k];
+              }
+              for (k = 0; k < hidden; k++) {
+                float hp = h_prev[k];
+                pre_r += hp * (float)w_r[row_len_in + k];
+                pre_z += hp * (float)w_z[row_len_in + k];
+                n_recur += hp * (float)w_n[row_len_in + k];
+              }
+              pre_r = pre_r * nn->weight_scale[i][0 * hidden + j] + (float)nn->bias_quantized[i][0 * hidden + j] * nn->bias_scale[i];
+              pre_z = pre_z * nn->weight_scale[i][1 * hidden + j] + (float)nn->bias_quantized[i][1 * hidden + j] * nn->bias_scale[i];
+              n_recur = n_recur * nn->weight_scale[i][2 * hidden + j];
+              gate_r[j] = activation_function_sigmoid(pre_r, false);
+              gate_z[j] = activation_function_sigmoid(pre_z, false);
+              n_recur_raw[j] = n_recur;
+              pre_n = pre_n * nn->weight_scale[i][2 * hidden + j] + gate_r[j] * n_recur + (float)nn->bias_quantized[i][2 * hidden + j] * nn->bias_scale[i];
+              gate_n[j] = activation_function_tanh(pre_n, false);
+              float h_new = (1.0f - gate_z[j]) * h_prev[j] + gate_z[j] * gate_n[j];
+              nn->neuron[i][j] = h_new;
+              nn->preact[i][j] = h_new; // no single "preact" applies here -- mirrored for consistency only, never read for this layer type
+            }
+          } else {
+            for (j = 0; j < hidden; j++) {
+              float pre_r = 0.0f, pre_z = 0.0f, pre_n = 0.0f, n_recur = 0.0f;
+              const float *w_r = nn->weight[i] + (0 * hidden + j) * row_len;
+              const float *w_z = nn->weight[i] + (1 * hidden + j) * row_len;
+              const float *w_n = nn->weight[i] + (2 * hidden + j) * row_len;
+              for (k = 0; k < row_len_in; k++) {
+                float x = nn->neuron[i - 1][k];
+                pre_r += x * w_r[k];
+                pre_z += x * w_z[k];
+                pre_n += x * w_n[k];
+              }
+              for (k = 0; k < hidden; k++) {
+                float hp = h_prev[k];
+                pre_r += hp * w_r[row_len_in + k];
+                pre_z += hp * w_z[row_len_in + k];
+                n_recur += hp * w_n[row_len_in + k];
+              }
+              pre_r += nn->bias[i][0 * hidden + j];
+              pre_z += nn->bias[i][1 * hidden + j];
+              gate_r[j] = activation_function_sigmoid(pre_r, false);
+              gate_z[j] = activation_function_sigmoid(pre_z, false);
+              n_recur_raw[j] = n_recur;
+              pre_n += gate_r[j] * n_recur + nn->bias[i][2 * hidden + j];
+              gate_n[j] = activation_function_tanh(pre_n, false);
+              float h_new = (1.0f - gate_z[j]) * h_prev[j] + gate_z[j] * gate_n[j];
+              nn->neuron[i][j] = h_new;
+              nn->preact[i][j] = h_new; // no single "preact" applies here -- mirrored for consistency only, never read for this layer type
+            }
+          }
+        }
         break;
       case LAYER_TYPE_ATTENTION:
         // Attention Layer
@@ -863,6 +1014,8 @@ nn_t *nn_init(void)
   nn->lstm_cell = NULL;
   nn->lstm_cache = NULL;
   nn->lstm_gate_grad = NULL;
+  nn->gru_cache = NULL;
+  nn->gru_gate_grad = NULL;
   nn->immutable = false;
   return nn;
 }
@@ -975,6 +1128,19 @@ void nn_free(nn_t *nn)
     for (int layer = 1; layer < (int)nn->depth; layer++)
       free(nn->lstm_gate_grad[layer]);
     free(nn->lstm_gate_grad);
+  }
+  // Free the GRU backward-pass caches (independent of quantized state, same
+  // as the LSTM arrays above). GRU has no separate persistent-state array
+  // of its own (unlike lstm_cell) -- its one state lives in neuron[] like RNN.
+  if (nn->gru_cache) {
+    for (int layer = 1; layer < (int)nn->depth; layer++)
+      free(nn->gru_cache[layer]);
+    free(nn->gru_cache);
+  }
+  if (nn->gru_gate_grad) {
+    for (int layer = 1; layer < (int)nn->depth; layer++)
+      free(nn->gru_gate_grad[layer]);
+    free(nn->gru_gate_grad);
   }
   free(nn);
 }
@@ -1152,6 +1318,14 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
   if (nn->lstm_gate_grad == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
   nn->lstm_gate_grad[nn->depth - 1] = NULL;
+  nn->gru_cache = (float **)realloc(nn->gru_cache, (nn->depth) * sizeof(float *));
+  if (nn->gru_cache == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->gru_cache[nn->depth - 1] = NULL;
+  nn->gru_gate_grad = (float **)realloc(nn->gru_gate_grad, (nn->depth) * sizeof(float *));
+  if (nn->gru_gate_grad == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->gru_gate_grad[nn->depth - 1] = NULL;
   // For layer 0, we do not allocate neuron/loss/preact (input is provided externally)
   if (nn->depth > 1) {
     nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
@@ -1263,6 +1437,26 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
         // nn_lstm_backward()).
         nn->lstm_gate_grad[nn->depth - 1] = (float *)malloc(4 * (size_t)hidden * sizeof(float));
         if (nn->lstm_gate_grad[nn->depth - 1] == NULL)
+          return NN_ERROR_OUT_OF_MEMORY;
+      } else if (layer_type == LAYER_TYPE_GRU) {
+        // bias_count == 3 * hidden here (see quantized_layer_shape()); the
+        // actual per-gate hidden width is nn->width[nn->depth - 1].
+        const int hidden = (int)nn->width[nn->depth - 1];
+        // neuron[nn->depth-1] doubles as this layer's hidden state h (same
+        // as RNN/LSTM, and for the same reason) and must start at all-zeros.
+        // Unlike LSTM, GRU has no second persistent-state array -- just this.
+        memset(nn->neuron[nn->depth - 1], 0, (size_t)hidden * sizeof(float));
+        // Cache of this timestep's previous hidden state and every gate's
+        // activation, for nn_train()'s backward pass -- see its layout
+        // comment where gru_cache is declared in nn.h.
+        nn->gru_cache[nn->depth - 1] = (float *)malloc(5 * (size_t)hidden * sizeof(float));
+        if (nn->gru_cache[nn->depth - 1] == NULL)
+          return NN_ERROR_OUT_OF_MEMORY;
+        // Backward-pass output: each of the three gates' preact-space
+        // gradient, one width[nn->depth-1]-wide segment per gate (see
+        // nn_gru_backward()).
+        nn->gru_gate_grad[nn->depth - 1] = (float *)malloc(3 * (size_t)hidden * sizeof(float));
+        if (nn->gru_gate_grad[nn->depth - 1] == NULL)
           return NN_ERROR_OUT_OF_MEMORY;
       }
     }
@@ -1415,6 +1609,15 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
             sum += nn->lstm_gate_grad[i + 1][k] * nn->weight[i + 1][k * row_len + j];
           dh[j] = sum;
         }
+      } else if (nn->layer_type[i + 1] == LAYER_TYPE_GRU) {
+        const int hidden_next = (int)nn->width[i + 1];
+        const int row_len = (int)nn->width[i] + hidden_next;
+        for (j = 0; j < (int)nn->width[i]; j++) {
+          sum = 0.0f;
+          for (k = 0; k < 3 * hidden_next; k++)
+            sum += nn->gru_gate_grad[i + 1][k] * nn->weight[i + 1][k * row_len + j];
+          dh[j] = sum;
+        }
       } else {
         const int row_len = (int)nn->width[i];
         for (j = 0; j < (int)nn->width[i]; j++) {
@@ -1425,6 +1628,58 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
         }
       }
       nn_lstm_backward(nn, i, dh);
+    } else if (nn->layer_type[i] == LAYER_TYPE_GRU) {
+      // Same idea as the LSTM-owning branch just above (see its comment for
+      // the full rationale): gather dL/dh_t using the same per-(next-layer-
+      // type) rules, without any trailing activation-derivative multiply,
+      // then hand it to nn_gru_backward() instead. nn->loss[i] is reused as
+      // scratch space the same way.
+      float *dh = nn->loss[i];
+      if (nn->layer_type[i + 1] == LAYER_TYPE_POOL) {
+        memset(dh, 0, nn->width[i] * sizeof(float));
+        nn_pool_backward(nn, i + 1, dh);
+      } else if (nn->layer_type[i + 1] == LAYER_TYPE_CNN) {
+        memset(dh, 0, nn->width[i] * sizeof(float));
+        nn_conv_backward(nn, i + 1, dh);
+      } else if (nn->layer_type[i + 1] == LAYER_TYPE_DROPOUT) {
+        memset(dh, 0, nn->width[i] * sizeof(float));
+        nn_dropout_backward(nn, i + 1, dh);
+      } else if (nn->layer_type[i + 1] == LAYER_TYPE_RNN) {
+        const int row_len = (int)nn->width[i] + (int)nn->width[i + 1];
+        for (j = 0; j < (int)nn->width[i]; j++) {
+          sum = 0.0f;
+          for (k = 0; k < (int)nn->width[i + 1]; k++)
+            sum += nn->loss[i + 1][k] * nn->weight[i + 1][k * row_len + j];
+          dh[j] = sum;
+        }
+      } else if (nn->layer_type[i + 1] == LAYER_TYPE_LSTM) {
+        const int hidden_next = (int)nn->width[i + 1];
+        const int row_len = (int)nn->width[i] + hidden_next;
+        for (j = 0; j < (int)nn->width[i]; j++) {
+          sum = 0.0f;
+          for (k = 0; k < 4 * hidden_next; k++)
+            sum += nn->lstm_gate_grad[i + 1][k] * nn->weight[i + 1][k * row_len + j];
+          dh[j] = sum;
+        }
+      } else if (nn->layer_type[i + 1] == LAYER_TYPE_GRU) {
+        const int hidden_next = (int)nn->width[i + 1];
+        const int row_len = (int)nn->width[i] + hidden_next;
+        for (j = 0; j < (int)nn->width[i]; j++) {
+          sum = 0.0f;
+          for (k = 0; k < 3 * hidden_next; k++)
+            sum += nn->gru_gate_grad[i + 1][k] * nn->weight[i + 1][k * row_len + j];
+          dh[j] = sum;
+        }
+      } else {
+        const int row_len = (int)nn->width[i];
+        for (j = 0; j < (int)nn->width[i]; j++) {
+          sum = 0.0f;
+          for (k = 0; k < (int)nn->width[i + 1]; k++)
+            sum += nn->loss[i + 1][k] * nn->weight[i + 1][k * row_len + j];
+          dh[j] = sum;
+        }
+      }
+      nn_gru_backward(nn, i, dh);
     } else if (nn->layer_type[i + 1] == LAYER_TYPE_POOL) {
       // Pooling has no weight matrix -- route/distribute the gradient
       // directly according to the pooling type instead of the generic
@@ -1492,6 +1747,23 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
         }
         nn->loss[i][j] = sum * activation_function[nn->activation[i]](nn->preact[i][j], true);
       }
+    } else if (nn->layer_type[i + 1] == LAYER_TYPE_GRU) {
+      // Same idea as the LSTM-next-layer case above, but layer i+1's flat
+      // weight buffer has 3*width[i+1] rows (one per gate per hidden unit
+      // -- see quantized_layer_shape()) and its gate gradients live in
+      // gru_gate_grad[i+1], not loss[i+1]. Only the input-to-hidden columns
+      // of each of the three gates' rows contribute to our loss; the
+      // recurrent columns are deliberately skipped, same rationale as the
+      // RNN/LSTM cases (truncated BPTT depth 1).
+      const int hidden_next = (int)nn->width[i + 1];
+      const int row_len = (int)nn->width[i] + hidden_next;
+      for (j = 0; j < (int)nn->width[i]; j++) {
+        sum = 0.0f;
+        for (k = 0; k < 3 * hidden_next; k++) {
+          sum += nn->gru_gate_grad[i + 1][k] * nn->weight[i + 1][k * row_len + j];
+        }
+        nn->loss[i][j] = sum * activation_function[nn->activation[i]](nn->preact[i][j], true);
+      }
     } else {
       // Layer i+1's flat weight buffer has a row per its own neuron, each
       // row_len = width[i] wide (its previous layer's width, i.e. ours).
@@ -1534,6 +1806,12 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       // as scratch space for this layer type -- see the backprop loop above).
       for (j = 0; j < 4 * (int)nn->width[i]; j++)
         nn->bias[i][j] += nn->lstm_gate_grad[i][j] * rate;
+    } else if (nn->layer_type[i] == LAYER_TYPE_GRU) {
+      // 3*hidden biases (one per gate per hidden unit); the gradient for
+      // each comes from gru_gate_grad[i], not loss[i] (which is repurposed
+      // as scratch space for this layer type -- see the backprop loop above).
+      for (j = 0; j < 3 * (int)nn->width[i]; j++)
+        nn->bias[i][j] += nn->gru_gate_grad[i][j] * rate;
     } else {
         // FC / output layers
         for (j = 0; j < (int)nn->width[i]; j++)
@@ -1628,6 +1906,30 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
         for (k = 0; k < hidden; k++)
           nn->weight_adj[i][j * row_len + row_len_in + k] = grad[j] * h_prev[k];
       }
+    } else if (nn->layer_type[i] == LAYER_TYPE_GRU) {
+      // Same idea as the LSTM case above (rows [0,hidden)=reset,
+      // [hidden,2*hidden)=update, [2*hidden,3*hidden)=candidate -- see
+      // quantized_layer_shape()), EXCEPT the candidate gate's recurrent
+      // columns need an extra factor of the reset gate's own output r[j]:
+      // its preact is W_n x + r*(U_n h_prev) + b_n (see
+      // forward_propagation()'s LAYER_TYPE_GRU case), so
+      // d(preact)/d(U_n[j,k]) = r[j] * h_prev[k], not just h_prev[k] the
+      // way it is for the reset/update gates' own recurrent weights.
+      const int row_len_in = (int)nn->width[i - 1];
+      const int hidden = (int)nn->width[i];
+      const int row_len = row_len_in + hidden;
+      const float *h_prev = nn->gru_cache[i] + 0 * hidden;
+      const float *gate_r = nn->gru_cache[i] + 1 * hidden;
+      const float *grad = nn->gru_gate_grad[i];
+      for (j = 0; j < 3 * hidden; j++) {
+        for (k = 0; k < row_len_in; k++)
+          nn->weight_adj[i][j * row_len + k] = grad[j] * nn->neuron[i - 1][k];
+        // j / hidden: 0=reset, 1=update, 2=candidate; j % hidden: which
+        // hidden unit's row within that gate.
+        float recur_scale = (j / hidden == 2) ? grad[j] * gate_r[j % hidden] : grad[j];
+        for (k = 0; k < hidden; k++)
+          nn->weight_adj[i][j * row_len + row_len_in + k] = recur_scale * h_prev[k];
+      }
     } else {
       // FC / output layers
       const int row_len = (int)nn->width[i - 1];
@@ -1663,6 +1965,14 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       int total = rows * row_len;
       for (int idx = 0; idx < total; ++idx)
         nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
+    } else if (nn->layer_type[i] == LAYER_TYPE_GRU) {
+      // Same idea as RNN/LSTM above, but 3x the rows (one per gate per
+      // hidden unit -- see quantized_layer_shape()).
+      int rows, row_len, bias_count;
+      quantized_layer_shape(nn, i, &rows, &row_len, &bias_count);
+      int total = rows * row_len;
+      for (int idx = 0; idx < total; ++idx)
+        nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
     } else {
       // FC / output layers
       int total = (int)nn->width[i] * (int)nn->width[i - 1];
@@ -1693,7 +2003,8 @@ void nn_reset_state(nn_t *nn)
   if (!nn)
     return;
   for (int layer = 1; layer < (int)nn->depth; layer++) {
-    if (nn->layer_type[layer] == LAYER_TYPE_RNN || nn->layer_type[layer] == LAYER_TYPE_LSTM)
+    if (nn->layer_type[layer] == LAYER_TYPE_RNN || nn->layer_type[layer] == LAYER_TYPE_LSTM ||
+        nn->layer_type[layer] == LAYER_TYPE_GRU)
       memset(nn->neuron[layer], 0, (size_t)nn->width[layer] * sizeof(float));
     if (nn->layer_type[layer] == LAYER_TYPE_LSTM)
       memset(nn->lstm_cell[layer], 0, (size_t)nn->width[layer] * sizeof(float));
@@ -2449,6 +2760,8 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
   nn->lstm_cell = NULL;
   nn->lstm_cache = NULL;
   nn->lstm_gate_grad = NULL;
+  nn->gru_cache = NULL;
+  nn->gru_gate_grad = NULL;
 
   // Allocate every top-level array up front, all sized to `depth` and
   // zeroed, before touching nn->depth: nn_free() indexes every layer <
@@ -2490,10 +2803,16 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
   nn->lstm_cell = (float **)calloc(depth, sizeof(*nn->lstm_cell));
   nn->lstm_cache = (float **)calloc(depth, sizeof(*nn->lstm_cache));
   nn->lstm_gate_grad = (float **)calloc(depth, sizeof(*nn->lstm_gate_grad));
+  // Per GRU layer: its one backward-pass cache (gru_cache) and gate-grad
+  // buffer (gru_gate_grad) -- no separate persistent-state array, unlike
+  // LSTM's lstm_cell, since GRU's one state lives in neuron[] like RNN's.
+  nn->gru_cache = (float **)calloc(depth, sizeof(*nn->gru_cache));
+  nn->gru_gate_grad = (float **)calloc(depth, sizeof(*nn->gru_gate_grad));
   bool top_level_ok = nn->layer_type && nn->width && nn->activation && nn->config &&
       nn->neuron && nn->loss && nn->preact && nn->weight_scale && nn->bias_scale &&
       nn->pool_argmax && nn->dropout_scale && nn->rnn_hidden_prev &&
-      nn->lstm_cell && nn->lstm_cache && nn->lstm_gate_grad;
+      nn->lstm_cell && nn->lstm_cache && nn->lstm_gate_grad &&
+      nn->gru_cache && nn->gru_gate_grad;
   if (nn->quantized) {
     nn->weight_quantized = (int8_t **)calloc(depth, sizeof(*nn->weight_quantized));
     nn->bias_quantized = (int8_t **)calloc(depth, sizeof(*nn->bias_quantized));
@@ -2595,6 +2914,27 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
         // exist for a mutable model.
         nn->lstm_gate_grad[L] = (float *)malloc(4 * (size_t)hidden * sizeof(float));
         if (!nn->lstm_gate_grad[L])
+          goto fail;
+      }
+    }
+    if (nn->layer_type[L] == LAYER_TYPE_GRU) {
+      const int hidden = (int)nn->width[L];
+      // neuron[L] doubles as this layer's hidden state h (same as RNN/LSTM,
+      // and for the same reason) and must start at all-zeros. Unlike LSTM,
+      // GRU has no second persistent-state array.
+      memset(nn->neuron[L], 0, (size_t)hidden * sizeof(float));
+      // Cache of this timestep's previous hidden state and every gate's
+      // activation -- written by every forward pass regardless of
+      // training, so unconditional (same reasoning as lstm_cache above).
+      nn->gru_cache[L] = (float *)malloc(5 * (size_t)hidden * sizeof(float));
+      if (!nn->gru_cache[L])
+        goto fail;
+      if (copy) {
+        // Only ever written by nn_train()'s backward pass
+        // (nn_gru_backward()), never by a forward-only call -- so, like
+        // lstm_gate_grad above, only needs to exist for a mutable model.
+        nn->gru_gate_grad[L] = (float *)malloc(3 * (size_t)hidden * sizeof(float));
+        if (!nn->gru_gate_grad[L])
           goto fail;
       }
     }
@@ -3002,19 +3342,20 @@ nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   // NEXT layer is RNN, its row layout is [width[layer] input columns |
   // width[layer+1] recurrent columns] rather than the plain
   // width[layer]-wide row the generic column-removal logic below assumes,
-  // so that combination is rejected too. LSTM is rejected for the same two
-  // reasons as RNN, just with four gate rows per hidden unit instead of one
-  // (see quantized_layer_shape()) -- the self-referential shrink problem
-  // and the wider-than-width[layer] next-layer row both still apply.
+  // so that combination is rejected too. LSTM and GRU are rejected for the
+  // same two reasons as RNN, just with four (LSTM) or three (GRU) gate rows
+  // per hidden unit instead of one (see quantized_layer_shape()) -- the
+  // self-referential shrink problem and the wider-than-width[layer]
+  // next-layer row both still apply.
   if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
       nn->layer_type[layer] == LAYER_TYPE_DROPOUT || nn->layer_type[layer] == LAYER_TYPE_RNN ||
-      nn->layer_type[layer] == LAYER_TYPE_LSTM) {
+      nn->layer_type[layer] == LAYER_TYPE_LSTM || nn->layer_type[layer] == LAYER_TYPE_GRU) {
     return NN_ERROR_UNSUPPORTED_LAYER;
   }
   if (layer + 1 < (int)nn->depth &&
       (nn->layer_type[layer + 1] == LAYER_TYPE_CNN || nn->layer_type[layer + 1] == LAYER_TYPE_POOL ||
        nn->layer_type[layer + 1] == LAYER_TYPE_DROPOUT || nn->layer_type[layer + 1] == LAYER_TYPE_RNN ||
-       nn->layer_type[layer + 1] == LAYER_TYPE_LSTM)) {
+       nn->layer_type[layer + 1] == LAYER_TYPE_LSTM || nn->layer_type[layer + 1] == LAYER_TYPE_GRU)) {
     return NN_ERROR_UNSUPPORTED_LAYER;
   }
   int old_width = nn->width[layer];
@@ -3113,7 +3454,7 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
   // of them.
   if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
       nn->layer_type[layer] == LAYER_TYPE_DROPOUT || nn->layer_type[layer] == LAYER_TYPE_RNN ||
-      nn->layer_type[layer] == LAYER_TYPE_LSTM) {
+      nn->layer_type[layer] == LAYER_TYPE_LSTM || nn->layer_type[layer] == LAYER_TYPE_GRU) {
     return 0.0f;
   }
   float total = 0.0f;
@@ -3136,7 +3477,7 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
   if (layer + 1 < (int)nn->depth &&
       nn->layer_type[layer + 1] != LAYER_TYPE_CNN && nn->layer_type[layer + 1] != LAYER_TYPE_POOL &&
       nn->layer_type[layer + 1] != LAYER_TYPE_DROPOUT && nn->layer_type[layer + 1] != LAYER_TYPE_RNN &&
-      nn->layer_type[layer + 1] != LAYER_TYPE_LSTM) {
+      nn->layer_type[layer + 1] != LAYER_TYPE_LSTM && nn->layer_type[layer + 1] != LAYER_TYPE_GRU) {
     int next_row_len = (int)nn->width[layer]; // layer+1's row length == this layer's width
     for (int i = 0; i < (int)nn->width[layer + 1]; i++) {
       if (nn->quantized) {
@@ -3166,18 +3507,18 @@ bool nn_prune_lightest_neuron(nn_t *nn)
   int lightest_layer = -1;
   int lightest_index = -1;
   float min_weight = FLT_MAX;
-  // Search all hidden layers (1..depth-2), skipping CNN/POOL/DROPOUT/RNN/LSTM
-  // layers -- none of them can be pruned this way (see nn_remove_neuron()).
-  // This isn't just an optimization: nn_get_total_neuron_weight() returns
-  // 0.0f for all five, which would otherwise look like the "lightest"
-  // possible neuron and win the search below, silently turning every prune
-  // attempt into a no-op (nn_remove_neuron() would then reject it, but its
-  // return value here is intentionally ignored the same way it is
-  // elsewhere in this function).
+  // Search all hidden layers (1..depth-2), skipping
+  // CNN/POOL/DROPOUT/RNN/LSTM/GRU layers -- none of them can be pruned this
+  // way (see nn_remove_neuron()). This isn't just an optimization:
+  // nn_get_total_neuron_weight() returns 0.0f for all six, which would
+  // otherwise look like the "lightest" possible neuron and win the search
+  // below, silently turning every prune attempt into a no-op
+  // (nn_remove_neuron() would then reject it, but its return value here is
+  // intentionally ignored the same way it is elsewhere in this function).
   for (int layer = 1; layer < (int)nn->depth - 1; layer++) {
     if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
         nn->layer_type[layer] == LAYER_TYPE_DROPOUT || nn->layer_type[layer] == LAYER_TYPE_RNN ||
-        nn->layer_type[layer] == LAYER_TYPE_LSTM) {
+        nn->layer_type[layer] == LAYER_TYPE_LSTM || nn->layer_type[layer] == LAYER_TYPE_GRU) {
       continue;
     }
     for (int neuron = 0; neuron < (int)nn->width[layer]; neuron++) {

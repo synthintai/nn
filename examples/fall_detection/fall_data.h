@@ -10,8 +10,9 @@
 
 #include <stdbool.h>
 
-// Synthetic 3-axis accelerometer data for train.c: a continuous
-// monitoring stream that either stays "normal daily activity" throughout,
+// Synthetic 3-axis accelerometer data for train_rnn.c/train_gru.c/
+// train_lstm.c: a continuous monitoring stream that either stays "normal
+// daily activity" throughout,
 // or contains exactly one fall event (free-fall dip, impact spike, then
 // post-fall stillness) inserted at a random point. Unlike
 // examples/gesture_recognition/train.c's fixed one-label-per-window scheme, each

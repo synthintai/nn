@@ -99,7 +99,24 @@ typedef enum {
   // OUTPUT layer. See the comment above forward_propagation()'s
   // LAYER_TYPE_LSTM case in nn.c for the weight layout and full rationale.
   LAYER_TYPE_LSTM,
-  LAYER_TYPE_GRU,        // Gated Recurrent Unit Layer - Not yet implemented
+  // Gated Recurrent Unit Layer. Like LAYER_TYPE_LSTM (one timestep per call,
+  // `config` unused, width set directly, nn_reset_state() between
+  // sequences, truncated BPTT depth 1, fixed gate nonlinearities not
+  // user-selected), but a cheaper middle point between LAYER_TYPE_RNN and
+  // LAYER_TYPE_LSTM: only THREE gates (reset, update, candidate) instead of
+  // four, and only ONE persistent state -- nn->neuron[layer], the hidden
+  // state h, same as RNN -- instead of LSTM's two. The update gate alone
+  // does the job LSTM splits across separate input/forget gates (how much
+  // of the new candidate to blend in vs. how much of the old state to
+  // keep), which is why GRU needs fewer weights and less compute than LSTM
+  // while still getting most of the same "hold a signal without it decaying"
+  // benefit over a plain RNN. Like LSTM, its backward pass
+  // (nn_gru_backward() in nn.c) replaces the generic per-neuron
+  // activation-derivative multiply every other layer type's backprop uses,
+  // so LAYER_TYPE_GRU should not be used as the network's final layer
+  // either. See the comment above forward_propagation()'s LAYER_TYPE_GRU
+  // case in nn.c for the weight layout, gate equations, and full rationale.
+  LAYER_TYPE_GRU,
   // Recurrent (Elman) Neural Network Layer. Width (the number of hidden
   // units) is given directly via nn_add_layer()'s `width` argument, same as
   // LAYER_TYPE_FC; `config` is unused (pass NULL). Unlike every other layer
@@ -256,6 +273,29 @@ typedef struct {
   // holding a per-neuron loss value -- see nn_train()'s LAYER_TYPE_LSTM
   // handling in nn.c).
   float **lstm_gate_grad;
+  // Per GRU layer only (NULL otherwise): forward_propagation() caches this
+  // timestep's previous hidden state and each gate's activation here for
+  // nn_train()'s backward pass (nn_gru_backward() in nn.c), which runs
+  // after forward_propagation() already overwrote neuron[layer] with the
+  // new state -- same reason lstm_cache exists for LAYER_TYPE_LSTM. Each
+  // layer's buffer is 5 * width[layer] floats, laid out as five
+  // width[layer]-wide segments: hidden_prev, then the reset/update/
+  // candidate gates' activations (already through their sigmoid/tanh
+  // nonlinearity), then the candidate gate's raw recurrent contribution
+  // (before the reset gate multiplies it -- needed to compute the reset
+  // gate's own gradient) -- see the comment above forward_propagation()'s
+  // LAYER_TYPE_GRU case in nn.c for the exact offsets. Unlike LSTM, GRU has
+  // only one persistent state (neuron[layer], the hidden state h), so there
+  // is no separate "gru_cell" field the way there's an lstm_cell.
+  float **gru_cache;
+  // Per GRU layer only (NULL otherwise): the three gates' preact-space
+  // gradients computed by nn_gru_backward(), one width[layer]-wide segment
+  // per gate in the same reset/update/candidate order as this layer's
+  // weight rows (see quantized_layer_shape()) -- 3 * width[layer] floats
+  // total. Read by nn_train()'s weight/bias-update loops for a GRU layer
+  // instead of nn->loss[layer] (repurposed as scratch space for this layer
+  // type, same as for LSTM -- see nn_train()'s LAYER_TYPE_GRU handling in nn.c).
+  float **gru_gate_grad;
   // True only for a model returned by nn_load_model_inplace(): weight,
   // weight_quantized, weight_scale, and bias/bias_quantized then point
   // directly into the caller's (read-only, e.g. flash-resident) buffer
@@ -339,10 +379,11 @@ void nn_conv2d(nn_t *nn, int layer);
 void nn_pool_forward(nn_t *nn, int layer);
 nn_error_t nn_quantize(nn_t *nn);
 nn_error_t nn_dequantize(nn_t *nn);
-// Zeros every RNN/LSTM layer's persistent state -- nn->neuron[layer] (the
-// hidden state, for both) and, for an LSTM layer, nn->lstm_cell[layer] (its
-// cell state) too. Call this before feeding the first timestep of a new,
-// independent sequence into a model that has an RNN or LSTM layer --
+// Zeros every RNN/LSTM/GRU layer's persistent state -- nn->neuron[layer]
+// (the hidden state, for all three) and, for an LSTM layer only,
+// nn->lstm_cell[layer] (its cell state) too -- GRU, like RNN, has just the
+// one state. Call this before feeding the first timestep of a new,
+// independent sequence into a model that has an RNN, LSTM, or GRU layer --
 // otherwise the final state left over from whatever sequence was last run
 // through the model (or uninitialized-but-zeroed state, for a freshly
 // constructed/loaded model) carries over into the new sequence. Safe to

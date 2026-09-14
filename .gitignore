@@ -15,4 +15,7 @@ train
 train.csv
 train_cnn
 train_fc
+train_gru
+train_lstm
+train_rnn
 validation.csv

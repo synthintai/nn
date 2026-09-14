@@ -10,11 +10,13 @@
 #include <stdlib.h>
 #include "nn.h"
 
-// Must match train.c's num_inputs (28x28, MNIST-style). This used to be a
-// flat 16x16 (256-element) array, which nn_predict() would over-read past
-// the end of when fed a model built by train.c's current architecture
-// (784 inputs) -- nn_predict() has no way to know the caller's buffer is
-// shorter than model->width[0], so it's on the caller to size it correctly.
+// Must match train_cnn.c's/train_fc.c's num_inputs (28x28, MNIST-style) --
+// both build a model with the same input shape, just a different
+// architecture behind it. This used to be a flat 16x16 (256-element)
+// array, which nn_predict() would over-read past the end of when fed a
+// model built by either's current architecture (784 inputs) --
+// nn_predict() has no way to know the caller's buffer is shorter than
+// model->width[0], so it's on the caller to size it correctly.
 #define IMG_SIZE 28
 #define SAMPLE_SIZE 16
 

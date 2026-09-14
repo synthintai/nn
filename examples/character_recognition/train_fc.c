@@ -1,9 +1,18 @@
 /*
  * Neural Network library
- * Copyright (c) 2019-2025 SynthInt Technologies, LLC
+ * Copyright (c) 2019-2026 SynthInt Technologies, LLC
  * https://synthint.ai
  * SPDX-License-Identifier: Apache-2.0
  */
+
+// Trains a plain fully-connected (FC) network -- no convolution, no
+// pooling -- on the same MNIST handwritten-digit task and the same
+// train.csv/validation.csv data as train_cnn.c in this directory. Every
+// pixel is just another input to the first FC layer; there's no notion of
+// spatial locality or shared weights the way a convolution has. It's the
+// baseline a CNN is normally justified against: expect this to train
+// slower and top out at a lower accuracy than train_cnn.c on the same
+// data, which is the point of having both examples side by side.
 
 #include <float.h>
 #include <stdbool.h>
@@ -14,16 +23,8 @@
 #include "data_prep.h"
 #include "nn.h"
 
-// A fixed validation-error target doesn't mean much across different loss
-// functions/architectures (e.g. cross-entropy's scale isn't MSE's), and
-// guessing a new magic number every time one of those changes is fragile.
-// Early stopping instead tracks the best validation error seen and stops
-// once it hasn't improved for this many epochs in a row, saving only the
-// best-so-far model (not necessarily the last epoch's, which may already be
-// more overfit) -- self-adjusting to whatever the loss actually is.
+// See train_cnn.c's identical constants for the early-stopping rationale.
 #define EARLY_STOPPING_PATIENCE 5
-// Hard safety cap so training can't run forever even if validation error
-// somehow keeps eking out tiny improvements indefinitely.
 #define MAX_EPOCHS 500
 
 int main(int argc, char *argv[]) {
@@ -37,17 +38,14 @@ int main(int argc, char *argv[]) {
   int num_inputs = 28 * 28;
   int num_outputs = 10;
   // Softmax + cross-entropy's output-layer gradient is the raw
-  // target-prediction (see ACTIVATION_FUNCTION_TYPE_SOFTMAX in nn.h) with no
-  // sigmoid-derivative factor (<=0.25x) damping it the way the old
-  // sigmoid+MSE output did -- at the old rate (0.025), that up-to-~4x
-  // larger effective step reliably drove every unit of the second FC layer
-  // negative within the first epoch. Once every unit in a ReLU layer is
-  // simultaneously dead, its derivative is 0 everywhere, permanently
-  // blocking all gradient flow to everything before it -- confirmed via a
-  // diagnostic run showing that layer frozen at 100% dead output from
-  // epoch 0 onward, collapsing training to predicting the class-marginal
-  // (log(10) =~ 2.3, the uniform-over-10-classes cross-entropy, which is
-  // exactly the plateau this used to get stuck at).
+  // target-prediction (see ACTIVATION_FUNCTION_TYPE_SOFTMAX in nn.h), a
+  // larger effective step than sigmoid+MSE's (damped by up to a 0.25x
+  // sigmoid-derivative factor) -- see train_cnn.c's identical comment for a
+  // specific diagnosed case of this driving a ReLU-family layer's units
+  // permanently negative at a higher rate. GELU (not ReLU) for the same
+  // reason as train_cnn.c: it dips slightly negative instead of flatlining
+  // at zero, so a unit that drifts negative still has a nonzero gradient
+  // and can recover.
   float learning_rate = 0.005f;
   float annealing = 1.0f;
   // End of tunable parameters
@@ -75,17 +73,9 @@ int main(int argc, char *argv[]) {
     data_free(train_data);
     return 1;
   }
-  // Attempt to load an existing model. nn_load_model() already auto-detects
-  // ascii vs. binary, but the inplace format needs a mutable model to keep
-  // training (nn_train() refuses to run on the read-only model
-  // nn_load_model_inplace() itself would produce -- its weight arrays are
-  // aliased into the input buffer, not owned), so use
-  // nn_load_model_inplace_copy() instead when nn_model_format() reports
-  // that's what the file is; that copies the weights into normal owned
-  // allocations, so the buffer can be freed right after loading. As with
-  // the ascii/binary case below, any load failure here (missing file,
-  // corrupt file, whatever) just falls through to creating a new model,
-  // rather than being treated as a distinct hard error.
+  // Attempt to load an existing model. See train_cnn.c's identical block
+  // for why the inplace format needs nn_load_model_inplace_copy() instead
+  // of plain nn_load_model() to keep training.
   nn_model_format_t existing_format = nn_model_format(model_path);
   if (existing_format == NN_MODEL_FORMAT_INPLACE) {
     nn = NULL;
@@ -114,57 +104,14 @@ int main(int argc, char *argv[]) {
       data_free(validation_data);
       return 1;
     }
-    // Construct the neural network, layer by layer
+    // Construct the neural network, layer by layer -- every pixel feeds
+    // directly into the first FC layer, no convolution/pooling ahead of it.
     nn_add_layer(nn, LAYER_TYPE_INPUT, num_inputs, ACTIVATION_FUNCTION_TYPE_NONE, NULL);
-    cnn_t cnn = {
-      .in_h = 28,
-      .in_w = 28,
-      .in_channels = 1,
-      .out_channels = 8,
-      .kernel_size = 5,
-      .stride = 1,
-      .padding = 2,
-      .dilation = 1,
-      .weight_init = NN_INIT_XAVIER,
-      .bias_init = NN_INIT_ZEROS,
-    };
-    nn_add_layer(nn, LAYER_TYPE_CNN, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (cnn_t *)&cnn);
-    // "Same" padding ((28 + 2*2 - 5)/1 + 1 == 28) keeps the CNN output at
-    // the full 28x28 instead of shrinking it to 24x24, so the outer couple
-    // of pixels of the digit -- where strokes commonly start/end -- still
-    // get seen by every kernel position instead of being cropped away
-    // before the network looks at them at all. Pool it down 2x2 -> 8x14x14
-    // before the first fully-connected layer (vs. 8x12x12 without padding),
-    // improving translation invariance.
-    pool_t pool = {
-      .in_h = 28,
-      .in_w = 28,
-      .channels = 8,
-      .pool_size = 2,
-      .stride = 2,
-      .pooling_type = POOLING_TYPE_MAX,
-    };
-    nn_add_layer(nn, LAYER_TYPE_POOL, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (pool_t *)&pool);
-    // GELU instead of RELU: smooth and non-monotonic (dips slightly negative
-    // before rising) rather than flat-zero for any negative preact, so a
-    // unit that drifts negative still has a small, nonzero gradient and can
-    // recover instead of dying forever -- directly hardens these layers
-    // against the exact permanently-dead-ReLU collapse diagnosed earlier
-    // (see the learning-rate comment above), on top of whatever accuracy
-    // difference it makes.
-    nn_add_layer(nn, LAYER_TYPE_FC, 120, ACTIVATION_FUNCTION_TYPE_GELU, NULL);
-    // Regularization: the first FC layer (1568*120 weights) has by far the
-    // most capacity in this network, and is the one most free to overfit --
-    // randomly zeroing 30% of its outputs during training (a no-op at
-    // inference, see LAYER_TYPE_DROPOUT's comment in nn.h) keeps the second
-    // FC layer from co-adapting to any one of them too tightly.
-    dropout_t dropout = { .rate = 0.3f };
-    nn_add_layer(nn, LAYER_TYPE_DROPOUT, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (dropout_t *)&dropout);
-    nn_add_layer(nn, LAYER_TYPE_FC, 20, ACTIVATION_FUNCTION_TYPE_GELU, NULL);
+    nn_add_layer(nn, LAYER_TYPE_FC, 128, ACTIVATION_FUNCTION_TYPE_GELU, NULL);
+    nn_add_layer(nn, LAYER_TYPE_FC, 64, ACTIVATION_FUNCTION_TYPE_GELU, NULL);
     // Softmax + cross-entropy (the loss nn_train()/nn_error() switch to
     // automatically for a softmax output -- see ACTIVATION_FUNCTION_TYPE_SOFTMAX
-    // in nn.h) models these 10 digits as mutually exclusive classes, unlike
-    // the 10 independent per-class sigmoids this used before.
+    // in nn.h) models these 10 digits as mutually exclusive classes.
     nn_add_layer(nn, LAYER_TYPE_OUTPUT, num_outputs, ACTIVATION_FUNCTION_TYPE_SOFTMAX, NULL);
   } else {
     printf("Using existing model file: %s\n", model_path);
@@ -178,13 +125,8 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
-  // Establish a validation-error baseline before training: for a resumed
-  // model, this is its current validation error, so early stopping (and
-  // "only save on improvement" below) can't immediately overwrite an
-  // already-good saved model with a worse one just because epoch 1 of this
-  // run happens to land above where the previous run left off. For a brand
-  // new model, there's nothing to beat yet, so +infinity makes the very
-  // first epoch always count as an improvement.
+  // See train_cnn.c's identical block for why this baseline matters when
+  // resuming an existing model.
   float best_validation_error = FLT_MAX;
   if (resuming) {
     total_validation_err = 0.0f;
@@ -221,15 +163,8 @@ int main(int argc, char *argv[]) {
     if (validation_error < best_validation_error) {
       best_validation_error = validation_error;
       epochs_since_improvement = 0;
-      // Only persist the best-so-far model, not every epoch's -- a later
-      // epoch may already be more overfit (see the training-log discussion
-      // that motivated early stopping) despite training error still
-      // falling. When resuming an existing model, save back in the same
-      // format it was loaded from (ascii/binary/inplace) rather than
-      // picking by file extension, so continuing to train an inplace model
-      // doesn't silently convert it to a different format; a brand-new
-      // model has no existing format to preserve, so it keeps the
-      // extension-based default (nn_save_model()).
+      // See train_cnn.c's identical block for why only the best-so-far
+      // model is persisted, and in what format.
       if (resuming && existing_format == NN_MODEL_FORMAT_INPLACE) {
         nn_save_model_inplace(nn, (char *)model_path);
       } else if (resuming && existing_format == NN_MODEL_FORMAT_BINARY) {

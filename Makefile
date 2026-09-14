@@ -21,6 +21,18 @@ libnn.so: nn.o
 nn.o: nn.c nn.h
 	$(CC) $(CFLAGS) -c $<
 
+# General-purpose CSV data loading (read/parse/shuffle flat input/target
+# rows), reusable by any example that wants CSV-backed training data --
+# unlike gesture_data.o/fall_data.o (each specific to one example's own
+# synthetic generator), this has no domain-specific logic of its own. Not
+# part of libnn.a for the same reason as those two: it's a desktop-side
+# training-data utility, not something an embedded target would want built
+# into the library. No root tool uses it directly, so it isn't part of
+# `all` -- examples/*/Makefile recurses into `$(MAKE) -C ../.. data_prep.o`
+# for whichever example needs it (currently just character_recognition).
+data_prep.o: data_prep.c data_prep.h
+	$(CC) $(CFLAGS) -c $<
+
 prune: prune.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
@@ -46,4 +58,4 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) nn.o libnn.a libnn.so prune quantize dequantize summary export import tags
+	$(RM) nn.o data_prep.o libnn.a libnn.so prune quantize dequantize summary export import tags

@@ -13,4 +13,6 @@ test
 test.csv
 train
 train.csv
+train_cnn
+train_fc
 validation.csv

@@ -33,7 +33,7 @@
 #include "fall_data.h"
 #include "nn.h"
 
-// See examples/character_recognition/train.c's identical constants for the early-stopping rationale.
+// See examples/character_recognition/train_cnn.c's identical constants for the early-stopping rationale.
 #define EARLY_STOPPING_PATIENCE 5
 #define MAX_EPOCHS 500
 
@@ -126,7 +126,7 @@ int main(int argc, char *argv[]) {
     num_validation++;
   }
 
-  // Attempt to load an existing model; see examples/character_recognition/train.c's identical block for
+  // Attempt to load an existing model; see examples/character_recognition/train_cnn.c's identical block for
   // why the inplace format needs nn_load_model_inplace_copy() instead of
   // plain nn_load_model() to keep training.
   nn_model_format_t existing_format = nn_model_format(model_path);
@@ -174,7 +174,7 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
-  // See examples/character_recognition/train.c's identical block for why this baseline matters when
+  // See examples/character_recognition/train_cnn.c's identical block for why this baseline matters when
   // resuming an existing model.
   float best_validation_error = FLT_MAX;
   if (resuming) {
@@ -209,7 +209,7 @@ int main(int argc, char *argv[]) {
       best_validation_error = validation_error;
       epochs_since_improvement = 0;
       // Save back in the same format the model was loaded from when
-      // resuming, same rationale as examples/character_recognition/train.c's identical block.
+      // resuming, same rationale as examples/character_recognition/train_cnn.c's identical block.
       if (resuming && existing_format == NN_MODEL_FORMAT_INPLACE) {
         nn_save_model_inplace(nn, (char *)model_path);
       } else if (resuming && existing_format == NN_MODEL_FORMAT_BINARY) {

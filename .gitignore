@@ -9,10 +9,12 @@ quantize
 samples.csv
 *.so
 summary
-test
 test.csv
+test_fall
 test_gesture
-train
+test_recognition
+train_fall
 train_gesture
 train.csv
+train_recognition
 validation.csv

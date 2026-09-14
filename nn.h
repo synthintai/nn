@@ -72,7 +72,33 @@ typedef enum {
   LAYER_TYPE_FC,         // Fully Connected Network Layer
   LAYER_TYPE_CNN,        // Convolutional Neural Network Layer
   LAYER_TYPE_POOL,       // Pooling Layer
-  LAYER_TYPE_LSTM,       // Long Short-Term Memory Layer - Not yet implemented
+  // Long Short-Term Memory Layer. Like LAYER_TYPE_RNN, width (the number of
+  // hidden units) is given directly via nn_add_layer()'s `width` argument,
+  // `config` is unused (pass NULL), and this layer processes one timestep
+  // per nn_train()/nn_predict()/nn_error() call, carrying state across
+  // calls -- call nn_reset_state() before a new, independent sequence.
+  // Unlike RNN, it carries TWO persistent state vectors: nn->neuron[layer]
+  // (the hidden state h, exactly as for RNN) and nn->lstm_cell[layer] (the
+  // cell state c, this layer's longer-lived memory, gated rather than
+  // overwritten each step -- what makes LSTM more resistant than a plain
+  // RNN to vanishing gradients over longer sequences). Each of its four
+  // gates (input, forget, cell-candidate, output) has a fixed nonlinearity
+  // (sigmoid for input/forget/output, tanh for the cell candidate) rather
+  // than a user-selected one -- nn->activation[layer] is stored for this
+  // layer (and round-tripped through save/load) but not used. Also like
+  // RNN, the recurrent connection is trained as truncated BPTT with a
+  // truncation depth of 1 (see LAYER_TYPE_RNN's comment for the rationale);
+  // an LSTM's output is not a scalar function of one preact per neuron the
+  // way every other layer type's is, though, so its backward pass
+  // (nn_lstm_backward() in nn.c) replaces the generic per-neuron
+  // activation-derivative multiply every other layer type's backprop uses.
+  // Because of that, LAYER_TYPE_LSTM should not be used as the network's
+  // final layer -- follow it with a normal FC/OUTPUT layer, the same way
+  // the RNN gesture-classification example (train_gesture.c) follows its
+  // RNN layer with an OUTPUT layer. See the comment above
+  // forward_propagation()'s LAYER_TYPE_LSTM case in nn.c for the weight
+  // layout and full rationale.
+  LAYER_TYPE_LSTM,
   LAYER_TYPE_GRU,        // Gated Recurrent Unit Layer - Not yet implemented
   // Recurrent (Elman) Neural Network Layer. Width (the number of hidden
   // units) is given directly via nn_add_layer()'s `width` argument, same as
@@ -201,6 +227,35 @@ typedef struct {
   // state. See the comment above forward_propagation()'s LAYER_TYPE_RNN
   // case in nn.c.
   float **rnn_hidden_prev;
+  // Per LSTM layer only (NULL otherwise): this layer's cell state c, a
+  // second persistent state vector alongside nn->neuron[layer]'s hidden
+  // state h (see LAYER_TYPE_LSTM's comment above). Zeroed by nn_add_layer()/
+  // nn_load_model_inplace()/nn_reset_state(); updated in place by
+  // forward_propagation()'s LAYER_TYPE_LSTM case every call.
+  float **lstm_cell;
+  // Per LSTM layer only (NULL otherwise): forward_propagation() caches this
+  // timestep's previous cell/hidden state and every gate's activation here
+  // for nn_train()'s backward pass (nn_lstm_backward() in nn.c), which runs
+  // after forward_propagation() already overwrote lstm_cell[layer]/
+  // neuron[layer] with the new state -- same reason rnn_hidden_prev exists
+  // for LAYER_TYPE_RNN. Each layer's buffer is 7 * width[layer] floats,
+  // laid out as seven width[layer]-wide segments: cell_prev, hidden_prev,
+  // then the input/forget/cell-candidate/output gates' activations (i.e.
+  // already through their sigmoid/tanh nonlinearity), then tanh(this
+  // timestep's cell state) -- see the comment above
+  // forward_propagation()'s LAYER_TYPE_LSTM case in nn.c for the exact
+  // offsets.
+  float **lstm_cache;
+  // Per LSTM layer only (NULL otherwise): the four gates' preact-space
+  // gradients computed by nn_lstm_backward(), one width[layer]-wide segment
+  // per gate in the same input/forget/cell-candidate/output order as this
+  // layer's weight rows (see quantized_layer_shape()) -- 4 * width[layer]
+  // floats total. This is what nn_train()'s weight/bias-update loops read
+  // for an LSTM layer instead of nn->loss[layer] (which, for an LSTM layer
+  // only, is repurposed as scratch space by the backprop loop rather than
+  // holding a per-neuron loss value -- see nn_train()'s LAYER_TYPE_LSTM
+  // handling in nn.c).
+  float **lstm_gate_grad;
   // True only for a model returned by nn_load_model_inplace(): weight,
   // weight_quantized, weight_scale, and bias/bias_quantized then point
   // directly into the caller's (read-only, e.g. flash-resident) buffer
@@ -284,14 +339,16 @@ void nn_conv2d(nn_t *nn, int layer);
 void nn_pool_forward(nn_t *nn, int layer);
 nn_error_t nn_quantize(nn_t *nn);
 nn_error_t nn_dequantize(nn_t *nn);
-// Zeros every RNN layer's hidden state (nn->neuron[layer]). Call this
-// before feeding the first timestep of a new, independent sequence into a
-// model that has an RNN layer -- otherwise the final hidden state left over
-// from whatever sequence was last run through the model (or uninitialized-
-// but-zeroed state, for a freshly constructed/loaded model) carries over
-// into the new sequence. Safe to call on an immutable (nn_load_model_inplace())
-// model too: it only touches the always-owned neuron[] buffers, never the
-// aliased weight/bias arrays.
+// Zeros every RNN/LSTM layer's persistent state -- nn->neuron[layer] (the
+// hidden state, for both) and, for an LSTM layer, nn->lstm_cell[layer] (its
+// cell state) too. Call this before feeding the first timestep of a new,
+// independent sequence into a model that has an RNN or LSTM layer --
+// otherwise the final state left over from whatever sequence was last run
+// through the model (or uninitialized-but-zeroed state, for a freshly
+// constructed/loaded model) carries over into the new sequence. Safe to
+// call on an immutable (nn_load_model_inplace()) model too: it only touches
+// the always-owned neuron[]/lstm_cell[] buffers, never the aliased
+// weight/bias arrays.
 void nn_reset_state(nn_t *nn);
 
 #endif /* NN_H */

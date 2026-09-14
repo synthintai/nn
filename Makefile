@@ -10,7 +10,7 @@ STAMP       := .split.stamp
 
 .PHONY: all clean
 
-all:	export import train train_gesture test test_gesture predict quantize dequantize prune summary libnn.a libnn.so $(CSV_OUTPUTS)
+all:	export import train_recognition train_gesture train_fall test_recognition test_gesture test_fall predict quantize dequantize prune summary libnn.a libnn.so $(CSV_OUTPUTS)
 
 libnn.a: nn.o data_prep.o
 	$(RM) $@
@@ -33,22 +33,33 @@ nn.o: nn.c nn.h
 gesture_data.o: gesture_data.c gesture_data.h
 	$(CC) $(CFLAGS) -c $<
 
+# Synthetic fall-detection data shared by train_fall.c; same rationale as
+# gesture_data.o above (not part of libnn.a).
+fall_data.o: fall_data.c fall_data.h
+	$(CC) $(CFLAGS) -c $<
+
 export: export.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 import: import.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-train: train.c libnn.a
+train_recognition: train_recognition.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 train_gesture: train_gesture.c gesture_data.o libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
-test: test.c libnn.a
+train_fall: train_fall.c fall_data.o libnn.a
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
+test_recognition: test_recognition.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 test_gesture: test_gesture.c gesture_data.o libnn.a
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
+test_fall: test_fall.c fall_data.o libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 predict: predict.c libnn.a
@@ -79,7 +90,7 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o gesture_data.o libnn.a libnn.so export import train train_gesture test test_gesture predict quantize dequantize prune summary model.* gesture_model.* tags $(CSV_OUTPUTS)
+	$(RM) data_prep.o nn.o gesture_data.o fall_data.o libnn.a libnn.so export import train_recognition train_gesture train_fall test_recognition test_gesture test_fall predict quantize dequantize prune summary model.* gesture_model.* fall_model.* tags $(CSV_OUTPUTS)
 
 distclean: clean
 	$(RM) samples.csv

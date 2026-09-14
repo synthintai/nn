@@ -226,8 +226,18 @@ static float cross_entropy_term(float target, float pred)
 // (out_channels * in_channels of them, row_len = kernel_size^2 wide), with
 // bias_count = out_channels; for FC/OUTPUT layers a row is a neuron
 // (width[L] of them, row_len = width[L-1] wide), with bias_count =
-// width[L]. Pooling layers have no rows at all -- callers must check
-// nn->layer_type[L] != LAYER_TYPE_POOL themselves before using this.
+// width[L]. An RNN layer's row is also one neuron (width[L] of them), but
+// row_len = width[L-1] + width[L]: each row holds that neuron's
+// input-to-hidden weights (against the previous layer's width[L-1] outputs)
+// immediately followed by its hidden-to-hidden/recurrent weights (against
+// this same layer's own width[L] previous-timestep hidden state) --
+// concatenated into one flat row so every piece of generic per-row
+// machinery below (quantization, save/load, Xavier init, ...) handles RNN
+// layers automatically, with no separate weight array of its own. See the
+// comment above forward_propagation()'s LAYER_TYPE_RNN case for how the two
+// halves of a row are actually used. Pooling and dropout layers have no
+// rows at all -- callers must check nn->layer_type[L] against
+// LAYER_TYPE_POOL/LAYER_TYPE_DROPOUT themselves before using this.
 static void quantized_layer_shape(nn_t *nn, int L, int *rows, int *row_len, int *bias_count)
 {
   if (nn->layer_type[L] == LAYER_TYPE_CNN) {
@@ -235,6 +245,10 @@ static void quantized_layer_shape(nn_t *nn, int L, int *rows, int *row_len, int 
     *rows = c->out_channels * c->in_channels;
     *row_len = c->kernel_size * c->kernel_size;
     *bias_count = c->out_channels;
+  } else if (nn->layer_type[L] == LAYER_TYPE_RNN) {
+    *rows = (int)nn->width[L];
+    *row_len = (int)nn->width[L - 1] + (int)nn->width[L];
+    *bias_count = (int)nn->width[L];
   } else {
     *rows = (int)nn->width[L];
     *row_len = (int)nn->width[L - 1];
@@ -563,16 +577,67 @@ static void forward_propagation(nn_t *nn, bool training)
         // Dropout Layer
         nn_dropout_forward(nn, i, training);
         break;
+      case LAYER_TYPE_RNN:
+        // Recurrent (Elman) Neural Network Layer. Each row of this layer's
+        // flat weight buffer is [input-to-hidden weights (row_len_in of
+        // them) | hidden-to-hidden/recurrent weights (hidden of them)] --
+        // see quantized_layer_shape()'s comment. The recurrent half is
+        // multiplied against this same layer's own hidden state from the
+        // *previous* timestep, i.e. whatever nn->neuron[i] already holds
+        // when this call begins (left there by the previous
+        // nn_train()/nn_predict()/nn_error() call, or zeroed by
+        // nn_add_layer()/nn_reset_state() for the very first timestep of a
+        // sequence) -- NOT the value being computed this call.
+        //
+        // That previous state is cached into rnn_hidden_prev[i] up front
+        // (nn_train()'s backward pass needs it after this function returns,
+        // by which point neuron[i] has already been overwritten below with
+        // the new state). The two-pass structure below (compute every
+        // neuron's preact first, then apply the activation) is what makes
+        // this safe: the recurrent dot product only ever reads neuron[i]/
+        // rnn_hidden_prev[i], never writes it, so it doesn't matter that
+        // neuron[i] is about to become this timestep's output.
+        {
+          const int row_len_in = (int)nn->width[i - 1]; // input-to-hidden half of each row
+          const int hidden = (int)nn->width[i];          // == recurrent half's width == this layer's width
+          const int row_len = row_len_in + hidden;        // total flat row length (see quantized_layer_shape())
+          float *prev = nn->rnn_hidden_prev[i];
+          memcpy(prev, nn->neuron[i], (size_t)hidden * sizeof(float));
+          if (nn->quantized) {
+            for (j = 0; j < hidden; j++) {
+              sum = 0.0f;
+              const int8_t *wrow = nn->weight_quantized[i] + j * row_len;
+              for (k = 0; k < row_len_in; k++)
+                sum += nn->neuron[i - 1][k] * (float)wrow[k];
+              for (k = 0; k < hidden; k++)
+                sum += prev[k] * (float)wrow[row_len_in + k];
+              nn->preact[i][j] = sum * nn->weight_scale[i][j] + (float)nn->bias_quantized[i][j] * nn->bias_scale[i];
+            }
+          } else {
+            for (j = 0; j < hidden; j++) {
+              sum = 0.0f;
+              const float *wrow = nn->weight[i] + j * row_len;
+              for (k = 0; k < row_len_in; k++)
+                sum += nn->neuron[i - 1][k] * wrow[k];
+              for (k = 0; k < hidden; k++)
+                sum += prev[k] * wrow[row_len_in + k];
+              nn->preact[i][j] = sum + nn->bias[i][j];
+            }
+          }
+          // Softmax is restricted to LAYER_TYPE_OUTPUT by nn_add_layer(), so
+          // (unlike the FC/OUTPUT case above) there is no whole-layer
+          // normalization branch to consider here -- every RNN activation is
+          // a plain per-neuron function of its own preact.
+          for (j = 0; j < hidden; j++)
+            nn->neuron[i][j] = activation_function[nn->activation[i]](nn->preact[i][j], false);
+        }
+        break;
       case LAYER_TYPE_LSTM:
         // Long Short-Term Memory Layer
         // TODO
         break;
       case LAYER_TYPE_GRU:
         // Gated Recurrent Unit Layer
-        // TODO
-        break;
-      case LAYER_TYPE_RNN:
-        // Recurrent Neural Network Layer
         // TODO
         break;
       case LAYER_TYPE_ATTENTION:
@@ -633,6 +698,7 @@ nn_t *nn_init(void)
   nn->bias_scale = NULL;
   nn->pool_argmax = NULL;
   nn->dropout_scale = NULL;
+  nn->rnn_hidden_prev = NULL;
   nn->immutable = false;
   return nn;
 }
@@ -721,6 +787,13 @@ void nn_free(nn_t *nn)
     for (int layer = 1; layer < (int)nn->depth; layer++)
       free(nn->dropout_scale[layer]);
     free(nn->dropout_scale);
+  }
+  // Free the RNN previous-hidden-state cache (independent of quantized
+  // state, same as pool_argmax/dropout_scale above)
+  if (nn->rnn_hidden_prev) {
+    for (int layer = 1; layer < (int)nn->depth; layer++)
+      free(nn->rnn_hidden_prev[layer]);
+    free(nn->rnn_hidden_prev);
   }
   free(nn);
 }
@@ -882,6 +955,10 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
   if (nn->dropout_scale == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
   nn->dropout_scale[nn->depth - 1] = NULL;
+  nn->rnn_hidden_prev = (float **)realloc(nn->rnn_hidden_prev, (nn->depth) * sizeof(float *));
+  if (nn->rnn_hidden_prev == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->rnn_hidden_prev[nn->depth - 1] = NULL;
   // For layer 0, we do not allocate neuron/loss/preact (input is provided externally)
   if (nn->depth > 1) {
     nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
@@ -919,11 +996,13 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
           return NN_ERROR_OUT_OF_MEMORY;
       }
     } else {
-      // CNN, FC, and OUTPUT layers all store weight/weight_adj as one flat,
-      // row-major buffer of rows*row_len elements: a "row" is a kernel for
-      // CNN layers (row_len = kernel_size^2, one bias per output channel)
-      // or a neuron for FC/OUTPUT layers (row_len = previous layer's width,
-      // one bias per neuron) -- see quantized_layer_shape().
+      // CNN, FC, OUTPUT, and RNN layers all store weight/weight_adj as one
+      // flat, row-major buffer of rows*row_len elements: a "row" is a kernel
+      // for CNN layers (row_len = kernel_size^2, one bias per output
+      // channel), a neuron for FC/OUTPUT layers (row_len = previous layer's
+      // width, one bias per neuron), or a neuron for RNN layers (row_len =
+      // previous layer's width + this layer's own width, one bias per
+      // neuron) -- see quantized_layer_shape().
       int rows, row_len, bias_count;
       quantized_layer_shape(nn, nn->depth - 1, &rows, &row_len, &bias_count);
       float range;
@@ -951,6 +1030,22 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       }
       for (int b = 0; b < bias_count; ++b)
         nn->bias[nn->depth - 1][b] = 0.0f;
+      if (layer_type == LAYER_TYPE_RNN) {
+        // nn->neuron[nn->depth - 1] (malloc'd, not zeroed, just above) IS
+        // this layer's hidden state -- it must start at all-zeros so the
+        // very first timestep's recurrent dot product (forward_propagation()'s
+        // LAYER_TYPE_RNN case) reads a defined "no history yet" state
+        // instead of uninitialized memory. nn_reset_state() re-zeros this
+        // the same way to start a new sequence later.
+        memset(nn->neuron[nn->depth - 1], 0, (size_t)bias_count * sizeof(float));
+        // Cache of this layer's hidden state from just before the most
+        // recent forward pass overwrote it -- see forward_propagation()'s
+        // LAYER_TYPE_RNN case and nn_train()'s recurrent weight_adj
+        // computation.
+        nn->rnn_hidden_prev[nn->depth - 1] = (float *)malloc((size_t)bias_count * sizeof(float));
+        if (nn->rnn_hidden_prev[nn->depth - 1] == NULL)
+          return NN_ERROR_OUT_OF_MEMORY;
+      }
     }
   }
   return NN_ERROR_NONE;
@@ -1088,6 +1183,25 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       for (j = 0; j < (int)nn->width[i]; j++) {
         nn->loss[i][j] *= activation_function[nn->activation[i]](nn->preact[i][j], true);
       }
+    } else if (nn->layer_type[i + 1] == LAYER_TYPE_RNN) {
+      // An RNN layer's flat weight buffer has a row per its own neuron, but
+      // (unlike the plain FC/OUTPUT case below) each row is row_len =
+      // width[i] + width[i+1] wide: the first width[i] columns are the
+      // input-to-hidden weights against OUR neurons (what we need here),
+      // and the remaining width[i+1] columns are that layer's own
+      // recurrent/hidden-to-hidden weights, applied against ITS previous
+      // hidden state -- not ours. Only the input-to-hidden columns
+      // contribute to our loss; the recurrent columns are deliberately
+      // skipped (truncated BPTT depth 1 -- see LAYER_TYPE_RNN's comment in
+      // nn.h and forward_propagation()'s LAYER_TYPE_RNN case).
+      const int row_len = (int)nn->width[i] + (int)nn->width[i + 1];
+      for (j = 0; j < (int)nn->width[i]; j++) {
+        sum = 0.0f;
+        for (k = 0; k < (int)nn->width[i + 1]; k++) {
+          sum += nn->loss[i + 1][k] * nn->weight[i + 1][k * row_len + j];
+        }
+        nn->loss[i][j] = sum * activation_function[nn->activation[i]](nn->preact[i][j], true);
+      }
     } else {
       // Layer i+1's flat weight buffer has a row per its own neuron, each
       // row_len = width[i] wide (its previous layer's width, i.e. ours).
@@ -1178,6 +1292,27 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       }
     } else if (nn->layer_type[i] == LAYER_TYPE_POOL || nn->layer_type[i] == LAYER_TYPE_DROPOUT) {
       // Pooling and dropout both have no weights
+    } else if (nn->layer_type[i] == LAYER_TYPE_RNN) {
+      // Same row layout as forward_propagation()'s LAYER_TYPE_RNN case:
+      // input-to-hidden columns first (gradient w.r.t. our previous layer's
+      // current-timestep output, exactly like the FC/OUTPUT case below),
+      // then hidden-to-hidden/recurrent columns (gradient w.r.t. THIS
+      // layer's own hidden state from the *previous* timestep --
+      // rnn_hidden_prev[i], cached by forward_propagation() before it got
+      // overwritten with this timestep's state; nn->neuron[i] itself no
+      // longer holds that value by this point in nn_train()). The recurrent
+      // weight is trained (this is its only gradient term -- truncated BPTT
+      // depth 1), but no gradient is propagated further back through it.
+      const int row_len_in = (int)nn->width[i - 1];
+      const int hidden = (int)nn->width[i];
+      const int row_len = row_len_in + hidden;
+      const float *prev = nn->rnn_hidden_prev[i];
+      for (j = 0; j < hidden; j++) {
+        for (k = 0; k < row_len_in; k++)
+          nn->weight_adj[i][j * row_len + k] = nn->loss[i][j] * nn->neuron[i - 1][k];
+        for (k = 0; k < hidden; k++)
+          nn->weight_adj[i][j * row_len + row_len_in + k] = nn->loss[i][j] * prev[k];
+      }
     } else {
       // FC / output layers
       const int row_len = (int)nn->width[i - 1];
@@ -1197,6 +1332,14 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
         nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
     } else if (nn->layer_type[i] == LAYER_TYPE_POOL || nn->layer_type[i] == LAYER_TYPE_DROPOUT) {
       // Pooling and dropout both have no weights
+    } else if (nn->layer_type[i] == LAYER_TYPE_RNN) {
+      // Row length includes both the input-to-hidden and recurrent halves
+      // (see quantized_layer_shape()); weight_adj was filled with both
+      // above, so a single flat update over the whole row-major buffer
+      // updates both halves correctly.
+      int total = (int)nn->width[i] * ((int)nn->width[i - 1] + (int)nn->width[i]);
+      for (int idx = 0; idx < total; ++idx)
+        nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
     } else {
       // FC / output layers
       int total = (int)nn->width[i] * (int)nn->width[i - 1];
@@ -1216,6 +1359,20 @@ float *nn_predict(nn_t *nn, float *inputs)
   forward_propagation(nn, false);
   // Return the output layer
   return nn->neuron[nn->depth - 1];
+}
+
+// Zeros every RNN layer's hidden state (see LAYER_TYPE_RNN's comment in
+// nn.h). Call this before feeding the first timestep of a new, independent
+// sequence -- otherwise the previous sequence's final hidden state would
+// leak into the next one.
+void nn_reset_state(nn_t *nn)
+{
+  if (!nn)
+    return;
+  for (int layer = 1; layer < (int)nn->depth; layer++) {
+    if (nn->layer_type[layer] == LAYER_TYPE_RNN)
+      memset(nn->neuron[layer], 0, (size_t)nn->width[layer] * sizeof(float));
+  }
 }
 
 // Loads a neural net model from a file.
@@ -1342,8 +1499,13 @@ nn_t *nn_load_model_ascii(const char *path)
       } else if (nn->layer_type[layer] == LAYER_TYPE_POOL || nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
         // Pooling and dropout both have no weights/bias beyond the placeholder line already consumed above
       } else {
-        // Fully-connected / output layer
-        int row_len = (int)nn->width[layer - 1];
+        // Fully-connected / output / RNN layer. row_len comes from
+        // quantized_layer_shape() (not a hardcoded width[layer-1]) so this
+        // handles an RNN layer's wider row (input-to-hidden + recurrent
+        // columns, see that function's comment) the same as FC/OUTPUT's
+        // plain row -- both are just a flat row_len-wide read per neuron.
+        int rows, row_len, bias_count;
+        quantized_layer_shape(nn, layer, &rows, &row_len, &bias_count);
         for (int i = 0; i < (int)nn->width[layer]; i++) {
           // Skip weight_scale (0)
           if (fscanf(file, "%f\n", &dummy_scale) != 1)
@@ -1674,7 +1836,13 @@ static nn_t *nn_load_model_binary_impl(nn_reader_t *r)
       } else if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
         // Pooling and dropout both have no weights/bias beyond the placeholder read above
       } else {
-        uint32_t curr = nn->width[L], prev = nn->width[L - 1];
+        // FC / output / RNN -- row_len (named `prev` historically) comes
+        // from quantized_layer_shape() so an RNN layer's wider row
+        // (input-to-hidden + recurrent columns) is read the same way as
+        // FC/OUTPUT's plain row; see that function's comment.
+        int rows, prev, bias_count;
+        quantized_layer_shape(nn, (int)L, &rows, &prev, &bias_count);
+        uint32_t curr = nn->width[L];
         for (uint32_t i = 0; i < curr; i++) {
           // weight_scale placeholder
           if (!nn_reader_read(r, &dummy, sizeof(dummy)))
@@ -1944,6 +2112,7 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
   nn->bias_quantized = NULL; nn->bias_scale = NULL;
   nn->pool_argmax = NULL;
   nn->dropout_scale = NULL;
+  nn->rnn_hidden_prev = NULL;
 
   // Allocate every top-level array up front, all sized to `depth` and
   // zeroed, before touching nn->depth: nn_free() indexes every layer <
@@ -1972,9 +2141,15 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
   // that an inplace-loaded (inference-only) model never populates or reads;
   // still allocated (all-NULL) so nn_free() can safely iterate it uniformly.
   nn->dropout_scale = (float **)calloc(depth, sizeof(*nn->dropout_scale));
+  // Per RNN layer, holds the previous-hidden-state cache (see its field
+  // comment in nn.h) -- unlike dropout_scale, this IS populated by every
+  // forward pass (including nn_predict()/nn_error() on an immutable model),
+  // so it's allocated per-layer below regardless of `copy`, not just when
+  // copy == true.
+  nn->rnn_hidden_prev = (float **)calloc(depth, sizeof(*nn->rnn_hidden_prev));
   bool top_level_ok = nn->layer_type && nn->width && nn->activation && nn->config &&
       nn->neuron && nn->loss && nn->preact && nn->weight_scale && nn->bias_scale &&
-      nn->pool_argmax && nn->dropout_scale;
+      nn->pool_argmax && nn->dropout_scale && nn->rnn_hidden_prev;
   if (nn->quantized) {
     nn->weight_quantized = (int8_t **)calloc(depth, sizeof(*nn->weight_quantized));
     nn->bias_quantized = (int8_t **)calloc(depth, sizeof(*nn->bias_quantized));
@@ -2038,6 +2213,19 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
     nn->preact[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
     if (!nn->neuron[L] || !nn->preact[L])
       goto fail;
+    if (nn->layer_type[L] == LAYER_TYPE_RNN) {
+      // neuron[L] doubles as this layer's hidden state (see LAYER_TYPE_RNN's
+      // comment in nn.h) and must start at all-zeros, matching
+      // nn_add_layer(); malloc() above left it uninitialized.
+      memset(nn->neuron[L], 0, (size_t)nn->width[L] * sizeof(float));
+      // Populated by every forward pass (including nn_predict()/nn_error()
+      // on this immutable model, not just training) -- see rnn_hidden_prev's
+      // field comment in nn.h -- so this is allocated unconditionally, not
+      // gated on `copy` like weight_adj/pool_argmax/dropout_scale below.
+      nn->rnn_hidden_prev[L] = (float *)malloc((size_t)nn->width[L] * sizeof(float));
+      if (!nn->rnn_hidden_prev[L])
+        goto fail;
+    }
     if (copy) {
       // A mutable model needs loss[L] the moment it's ever trained at all
       // (its own contents don't need pre-initializing -- nn_train()'s
@@ -2224,8 +2412,11 @@ nn_error_t nn_save_model_ascii(nn_t *nn, const char *path)
       } else if (nn->layer_type[layer] == LAYER_TYPE_POOL || nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
         // Pooling and dropout both have no weights/bias beyond the placeholder line already written above
       } else {
-        // FC / output
-        int row_len = (int)nn->width[layer - 1];
+        // FC / output / RNN -- see the matching read side in
+        // nn_load_model_ascii() for why row_len comes from
+        // quantized_layer_shape() here instead of a hardcoded width[layer-1].
+        int rows, row_len, bias_count;
+        quantized_layer_shape(nn, layer, &rows, &row_len, &bias_count);
         for (int i = 0; i < (int)nn->width[layer]; i++) {
           // weight_scale placeholder
           fprintf(file, "0\n");
@@ -2319,7 +2510,12 @@ nn_error_t nn_save_model_binary(nn_t *nn, const char *path)
       } else if (nn->layer_type[L] == LAYER_TYPE_POOL || nn->layer_type[L] == LAYER_TYPE_DROPOUT) {
         // Pooling and dropout both have no weights/bias beyond the placeholder written above
       } else {
-        uint32_t curr = nn->width[L], prev = nn->width[L - 1];
+        // FC / output / RNN -- see nn_load_model_binary_impl()'s matching
+        // read side for why row_len (`prev`) comes from
+        // quantized_layer_shape() here instead of a hardcoded width[L-1].
+        int rows, prev, bias_count;
+        quantized_layer_shape(nn, (int)L, &rows, &prev, &bias_count);
+        uint32_t curr = nn->width[L];
         for (uint32_t i = 0; i < curr; i++) {
           float weight_scale = 0.0f;
           fwrite(&weight_scale, sizeof(weight_scale), 1, file);
@@ -2422,13 +2618,22 @@ nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   // would need to cascade the adjustment one hop further, to whatever comes
   // after the DROPOUT layer -- not implemented, so it's rejected the same
   // way CNN/POOL are, for a different reason.
+  // RNN is rejected for yet another reason: removing neuron k from an RNN
+  // layer would have to shrink both a ROW (like FC/OUTPUT) AND, because the
+  // recurrent half of every row is indexed by this same layer's own
+  // neurons, a COLUMN of every remaining row (the one at row_len_in + k) --
+  // a self-referential shrink this function has no logic for. And if the
+  // NEXT layer is RNN, its row layout is [width[layer] input columns |
+  // width[layer+1] recurrent columns] rather than the plain
+  // width[layer]-wide row the generic column-removal logic below assumes,
+  // so that combination is rejected too.
   if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
-      nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
+      nn->layer_type[layer] == LAYER_TYPE_DROPOUT || nn->layer_type[layer] == LAYER_TYPE_RNN) {
     return NN_ERROR_UNSUPPORTED_LAYER;
   }
   if (layer + 1 < (int)nn->depth &&
       (nn->layer_type[layer + 1] == LAYER_TYPE_CNN || nn->layer_type[layer + 1] == LAYER_TYPE_POOL ||
-       nn->layer_type[layer + 1] == LAYER_TYPE_DROPOUT)) {
+       nn->layer_type[layer + 1] == LAYER_TYPE_DROPOUT || nn->layer_type[layer + 1] == LAYER_TYPE_RNN)) {
     return NN_ERROR_UNSUPPORTED_LAYER;
   }
   int old_width = nn->width[layer];
@@ -2520,10 +2725,13 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
     return 0.0f;
   }
   // CNN/POOL layers aren't neuron-indexed the way this function assumes
-  // (see nn_remove_neuron() for why), and DROPOUT has no weight matrix at
-  // all; there's no meaningful "neuron weight" to report for any of them.
+  // (see nn_remove_neuron() for why), DROPOUT has no weight matrix at all,
+  // and RNN's row mixes input and recurrent columns in a layout this
+  // function doesn't account for (and is rejected by nn_remove_neuron()
+  // regardless) -- there's no meaningful "neuron weight" to report for any
+  // of them.
   if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
-      nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
+      nn->layer_type[layer] == LAYER_TYPE_DROPOUT || nn->layer_type[layer] == LAYER_TYPE_RNN) {
     return 0.0f;
   }
   float total = 0.0f;
@@ -2539,10 +2747,13 @@ float nn_get_total_neuron_weight(nn_t *nn, int layer, int neuron_index)
     }
   }
   // Sum absolute values of output weights (this neuron to next layer), only
-  // when the next layer's weight array is itself neuron-indexed (FC/OUTPUT).
+  // when the next layer's weight array is itself neuron-indexed with a
+  // plain width[layer]-wide row (FC/OUTPUT) -- an RNN next layer's row is
+  // width[layer]+width[layer+1] wide (input columns followed by its own
+  // recurrent columns), which next_row_len below does not account for.
   if (layer + 1 < (int)nn->depth &&
       nn->layer_type[layer + 1] != LAYER_TYPE_CNN && nn->layer_type[layer + 1] != LAYER_TYPE_POOL &&
-      nn->layer_type[layer + 1] != LAYER_TYPE_DROPOUT) {
+      nn->layer_type[layer + 1] != LAYER_TYPE_DROPOUT && nn->layer_type[layer + 1] != LAYER_TYPE_RNN) {
     int next_row_len = (int)nn->width[layer]; // layer+1's row length == this layer's width
     for (int i = 0; i < (int)nn->width[layer + 1]; i++) {
       if (nn->quantized) {
@@ -2572,17 +2783,17 @@ bool nn_prune_lightest_neuron(nn_t *nn)
   int lightest_layer = -1;
   int lightest_index = -1;
   float min_weight = FLT_MAX;
-  // Search all hidden layers (1..depth-2), skipping CNN/POOL/DROPOUT layers
-  // -- none of them can be pruned this way (see nn_remove_neuron()). This
-  // isn't just an optimization: nn_get_total_neuron_weight() returns 0.0f
-  // for all three, which would otherwise look like the "lightest" possible
-  // neuron and win the search below, silently turning every prune attempt
-  // into a no-op (nn_remove_neuron() would then reject it, but its return
-  // value here is intentionally ignored the same way it is elsewhere in
-  // this function).
+  // Search all hidden layers (1..depth-2), skipping CNN/POOL/DROPOUT/RNN
+  // layers -- none of them can be pruned this way (see nn_remove_neuron()).
+  // This isn't just an optimization: nn_get_total_neuron_weight() returns
+  // 0.0f for all four, which would otherwise look like the "lightest"
+  // possible neuron and win the search below, silently turning every prune
+  // attempt into a no-op (nn_remove_neuron() would then reject it, but its
+  // return value here is intentionally ignored the same way it is
+  // elsewhere in this function).
   for (int layer = 1; layer < (int)nn->depth - 1; layer++) {
     if (nn->layer_type[layer] == LAYER_TYPE_CNN || nn->layer_type[layer] == LAYER_TYPE_POOL ||
-        nn->layer_type[layer] == LAYER_TYPE_DROPOUT) {
+        nn->layer_type[layer] == LAYER_TYPE_DROPOUT || nn->layer_type[layer] == LAYER_TYPE_RNN) {
       continue;
     }
     for (int neuron = 0; neuron < (int)nn->width[layer]; neuron++) {

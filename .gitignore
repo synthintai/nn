@@ -11,6 +11,8 @@ samples.csv
 summary
 test
 test.csv
+test_gesture
 train
+train_gesture
 train.csv
 validation.csv

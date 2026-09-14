@@ -20,15 +20,21 @@ The code is divided into the following sections:
 
 4. `train.c` - An example of how to construct, train, and save a neural network model.
 
-5. `test.c` - Evaluates model performance, comparing predictions to ground truth of seen vs. unseen data.
+5. `train_gesture.c` - An example of how to construct, train, and save a recurrent (RNN) neural network model, classifying synthetic 3-axis accelerometer "gesture" time-series (the kind of sensor stream a wearable or remote control's IMU would produce) instead of a fixed image dataset -- no data file to download; every training window is generated on the fly (see `gesture_data.[ch]`).
 
-6. `predict.c` - Demonstrates how to use a trained neural network model in a target application to make predictions on new data.
+6. `gesture_data.[ch]` - Synthesizes the 3-axis accelerometer "gesture" windows used by `train_gesture.c` and `test_gesture.c`, so neither duplicates the other's data-generation logic.
 
-7. `prune.c` - Removes least contributing neurons from a network to reduce model size and improve performance.
+7. `test.c` - Evaluates model performance, comparing predictions to ground truth of seen vs. unseen data.
 
-8. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
+8. `test_gesture.c` - The `train_gesture.c` counterpart to `test.c`: independently re-evaluates a saved gesture model against a freshly-synthesized batch of windows (unseen by construction, since nothing about `train_gesture.c`'s data is ever persisted to disk) and reports a confusion matrix plus per-class/overall accuracy.
 
-9. `summary.c` - Describes a model file, including which of the three formats (ASCII, binary, or inplace) it's saved in.
+9. `predict.c` - Demonstrates how to use a trained neural network model in a target application to make predictions on new data.
+
+10. `prune.c` - Removes least contributing neurons from a network to reduce model size and improve performance.
+
+11. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
+
+12. `summary.c` - Describes a model file, including which of the three formats (ASCII, binary, or inplace) it's saved in.
 
 ## Features
 
@@ -57,9 +63,10 @@ The following layer types are supported (added one at a time, in order, via `nn_
 * **Convolutional (CNN)** - 2D convolution over the previous layer's feature maps, with configurable kernel size, stride, padding (same/zero-padding), and channel counts (see `cnn_t` in nn.h).
 * **Pooling** - downsamples a CNN layer's feature maps; Min, Max, or Average (see `pooling_type_t` in nn.h).
 * **Dropout** - training-only regularization that randomly zeroes a configurable fraction of a layer's outputs each step; a no-op pass-through at inference (see `dropout_t` in nn.h).
+* **Recurrent (RNN)** - a single-timestep Elman-style recurrent layer: its hidden state (`neuron[layer]`) persists across calls, so a sequence is processed by calling `nn_train()`/`nn_predict()`/`nn_error()` once per timestep. Call `nn_reset_state()` before starting a new, independent sequence. Trained with the recurrent connection treated as a constant for gradient purposes (truncated BPTT with a truncation depth of 1), so memory use stays flat regardless of sequence length -- consistent with this library's one-sample-at-a-time training model. Width (hidden units) is set directly via `nn_add_layer()`'s `width` argument, same as Fully Connected; it takes no config struct.
 * **Output** - the network's final layer; computed the same way as Fully Connected, with support for Softmax (see Features above) in addition to the other activation functions.
 
-LSTM, GRU, RNN, Attention, and Transformer layer types are declared in `layer_type_t` but not yet implemented (see TODO below).
+LSTM, GRU, Attention, and Transformer layer types are declared in `layer_type_t` but not yet implemented (see TODO below).
 
 ## Instructions
 
@@ -77,10 +84,19 @@ The model can be further trained (or fine-tuned) simply by re-running the traini
 
 The included example data is the MNIST data set.
 
+To train the RNN gesture-classification example instead (see `train_gesture.c` above -- no data file needed, training/validation windows are synthesized on the fly):
+```
+./train_gesture gesture_model.txt
+```
 
 To evaluate the model performance:
 ```
 ./test model.txt
+```
+
+To evaluate the gesture-classification model instead (prints a confusion matrix against a fresh, never-before-seen batch of synthesized windows):
+```
+./test_gesture gesture_model.txt
 ```
 
 
@@ -171,7 +187,6 @@ Licensed under the [Apache License 2.0](./LICENSE).
 
 ## TODO
 
-* Add Recurrent Neural Network Layer (RNN) layer type
 * Add Long Short-Term Memory (LSTM) layer type
 * Add Gated Recurrent Unit (GRU) layer type
 * Add Attention layer type

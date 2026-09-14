@@ -10,7 +10,7 @@ STAMP       := .split.stamp
 
 .PHONY: all clean
 
-all:	export import train test predict quantize dequantize prune summary libnn.a libnn.so $(CSV_OUTPUTS)
+all:	export import train train_gesture test test_gesture predict quantize dequantize prune summary libnn.a libnn.so $(CSV_OUTPUTS)
 
 libnn.a: nn.o data_prep.o
 	$(RM) $@
@@ -27,6 +27,12 @@ data_prep.o: data_prep.c data_prep.h
 nn.o: nn.c nn.h
 	$(CC) $(CFLAGS) -c $<
 
+# Synthetic gesture data shared by train_gesture/test_gesture; not part of
+# libnn.a (unlike data_prep.o) since it's specific to those two demo
+# programs rather than something an embedded target linking libnn.a would want.
+gesture_data.o: gesture_data.c gesture_data.h
+	$(CC) $(CFLAGS) -c $<
+
 export: export.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
@@ -36,7 +42,13 @@ import: import.c libnn.a
 train: train.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
+train_gesture: train_gesture.c gesture_data.o libnn.a
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
 test: test.c libnn.a
+	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+
+test_gesture: test_gesture.c gesture_data.o libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 predict: predict.c libnn.a
@@ -67,7 +79,7 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) data_prep.o nn.o libnn.a libnn.so export import train test predict quantize dequantize prune summary model.* tags $(CSV_OUTPUTS)
+	$(RM) data_prep.o nn.o gesture_data.o libnn.a libnn.so export import train train_gesture test test_gesture predict quantize dequantize prune summary model.* gesture_model.* tags $(CSV_OUTPUTS)
 
 distclean: clean
 	$(RM) samples.csv

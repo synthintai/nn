@@ -74,7 +74,25 @@ typedef enum {
   LAYER_TYPE_POOL,       // Pooling Layer
   LAYER_TYPE_LSTM,       // Long Short-Term Memory Layer - Not yet implemented
   LAYER_TYPE_GRU,        // Gated Recurrent Unit Layer - Not yet implemented
-  LAYER_TYPE_RNN,        // Recurrent Neural Network Layer - Not yet implemented
+  // Recurrent (Elman) Neural Network Layer. Width (the number of hidden
+  // units) is given directly via nn_add_layer()'s `width` argument, same as
+  // LAYER_TYPE_FC; `config` is unused (pass NULL). Unlike every other layer
+  // type, this layer is stateful and processes one timestep per
+  // nn_train()/nn_predict()/nn_error() call: nn->neuron[layer] holds this
+  // layer's hidden state and persists across calls (each call reads it as
+  // the *previous* timestep's state before overwriting it with the new
+  // one), so a caller runs a whole sequence by calling once per timestep.
+  // Call nn_reset_state() before starting a new, independent sequence --
+  // otherwise the previous sequence's final hidden state leaks into the
+  // next one. The recurrent connection is trained as truncated BPTT with a
+  // truncation depth of 1: the previous hidden state is treated as a
+  // constant for gradient purposes (like any earlier layer's activations),
+  // and no gradient flows further back through time than one step. This
+  // keeps memory use flat regardless of sequence length, matching this
+  // library's embedded-systems, one-sample-at-a-time training model. See
+  // the comment above forward_propagation()'s LAYER_TYPE_RNN case in nn.c
+  // for the weight layout and full rationale.
+  LAYER_TYPE_RNN,
   LAYER_TYPE_ATTENTION,  // Attention Layer - Not yet implemented
   LAYER_TYPE_TRANSFORMER,// Transformer Layer - Not yet implemented
   LAYER_TYPE_INPUT,      // Input Layer
@@ -174,6 +192,15 @@ typedef struct {
   // in nn.c) -- at inference a DROPOUT layer is a pure pass-through and this
   // is never populated or read.
   float **dropout_scale;
+  // Per RNN layer only (NULL otherwise): a copy of this layer's hidden state
+  // (nn->neuron[layer]) as it was just *before* the most recent forward
+  // pass overwrote it with the new timestep's state. forward_propagation()
+  // writes this every call (training or not); nn_train() reads it to
+  // compute the recurrent weight's gradient, since by the time backprop
+  // runs, nn->neuron[layer] itself already holds the new (not previous)
+  // state. See the comment above forward_propagation()'s LAYER_TYPE_RNN
+  // case in nn.c.
+  float **rnn_hidden_prev;
   // True only for a model returned by nn_load_model_inplace(): weight,
   // weight_quantized, weight_scale, and bias/bias_quantized then point
   // directly into the caller's (read-only, e.g. flash-resident) buffer
@@ -257,5 +284,14 @@ void nn_conv2d(nn_t *nn, int layer);
 void nn_pool_forward(nn_t *nn, int layer);
 nn_error_t nn_quantize(nn_t *nn);
 nn_error_t nn_dequantize(nn_t *nn);
+// Zeros every RNN layer's hidden state (nn->neuron[layer]). Call this
+// before feeding the first timestep of a new, independent sequence into a
+// model that has an RNN layer -- otherwise the final hidden state left over
+// from whatever sequence was last run through the model (or uninitialized-
+// but-zeroed state, for a freshly constructed/loaded model) carries over
+// into the new sequence. Safe to call on an immutable (nn_load_model_inplace())
+// model too: it only touches the always-owned neuron[] buffers, never the
+// aliased weight/bias arrays.
+void nn_reset_state(nn_t *nn);
 
 #endif /* NN_H */

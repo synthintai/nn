@@ -66,7 +66,7 @@ The following layer types are supported (added one at a time, in order, via `nn_
 * **Long Short-Term Memory (LSTM)** - like Recurrent (RNN) above (one timestep per call, `nn_reset_state()` between sequences, truncated BPTT depth 1, width set directly, no config struct), but with a second persistent state vector (the cell state, alongside the hidden state) and four internal gates (input, forget, cell-candidate, output) with fixed nonlinearities, more resistant than a plain RNN to vanishing gradients over longer sequences. Should not be used as the network's final layer -- follow it with a normal FC/OUTPUT layer, the same way `examples/fall_detection/train_lstm.c`'s LSTM layer is followed by an OUTPUT layer.
 * **Output** - the network's final layer; computed the same way as Fully Connected, with support for Softmax (see Features above) in addition to the other activation functions.
 
-Attention and Transformer layer types are declared in `layer_type_t` but not yet implemented (see TODO below).
+`layer_type_t` also declares `LAYER_TYPE_ATTENTION`/`LAYER_TYPE_TRANSFORMER` placeholders, but they're not implemented and not currently planned: attention needs to weight multiple past states at once (and full self-attention is O(n²) in sequence length), which conflicts with the flat, O(1)-per-timestep memory model every layer type above is built around.
 
 ## Instructions
 
@@ -215,8 +215,3 @@ nn_t *nn = nn_load_model_inplace(model_inplace_bin, model_inplace_bin_len);
 Copyright (c) 2019-2026 SynthInt Technologies, LLC. All rights reserved.
 
 Licensed under the [Apache License 2.0](./LICENSE).
-
-## TODO
-
-* Add Attention layer type
-* Add Transformer layer type

@@ -10,37 +10,25 @@ SPDX-License-Identifier: Apache-2.0
 
 This is a lightweight neural network library for use in microcontrollers and embedded systems.
 
-The code is divided into the following sections:
+The repository root holds the library itself and a set of general-purpose model tools (each works on a saved model regardless of which example produced it); everything under `examples/` is a self-contained example of constructing, training, and evaluating one particular kind of network, each with its own Makefile:
 
-1. `nn.[ch]` - The neural net library, which can be pulled directly into your embedded project.
+1. `nn.[ch]` - The neural net library, which can be pulled directly into your embedded project. Nothing else in this repository needs to accompany it into an embedded target.
 
-2. `data_prep.[ch]` - Data processing functions, used to read, parse, and shuffle training data.
+2. `prune.c` - Removes least contributing neurons from a network to reduce model size and improve performance.
 
-3. `dequantize.c` - Converts an 8-bit integer model into a floating point model.
+3. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
 
-4. `train_recognition.c` - An example of how to construct, train, and save a neural network model, training a CNN to recognize handwritten digits (MNIST).
+4. `dequantize.c` - Converts an 8-bit integer model into a floating point model.
 
-5. `train_gesture.c` - An example of how to construct, train, and save a recurrent (RNN) neural network model, classifying synthetic 3-axis accelerometer "gesture" time-series (the kind of sensor stream a wearable or remote control's IMU would produce) instead of a fixed image dataset -- no data file to download; every training window is generated on the fly (see `gesture_data.[ch]`).
+5. `export.c` / `import.c` - Convert a model between the ASCII, binary, and inplace file formats (see Model File Format below).
 
-6. `gesture_data.[ch]` - Synthesizes the 3-axis accelerometer "gesture" windows used by `train_gesture.c` and `test_gesture.c`, so neither duplicates the other's data-generation logic.
+6. `summary.c` - Describes a model file, including which of the three formats (ASCII, binary, or inplace) it's saved in.
 
-7. `train_fall.c` - An example of how to construct, train, and save an LSTM neural network model, continuously monitoring a synthetic 3-axis accelerometer stream for a fall event -- a multi-phase pattern (free-fall dip, impact spike, then a long stretch of post-fall stillness) spread across a much longer sequence than `train_gesture.c`'s fixed gesture windows, with a per-timestep (not per-window) label. See `fall_data.[ch]`.
+7. `examples/character_recognition/` - Trains a CNN to recognize handwritten digits (MNIST). `train.c`/`test.c` are paired with `data_prep.[ch]` (reads/parses/shuffles the MNIST CSV data) and `split.py` (splits the downloaded dataset into train/validation/test CSVs). `predict.c` demonstrates how to use the trained model in a target application to make predictions on new data (hardcoded to this example's 28x28 MNIST-style input, unlike the format-agnostic tools above).
 
-8. `fall_data.[ch]` - Synthesizes the normal-activity and fall-event accelerometer sequences used by `train_fall.c` and `test_fall.c`, so neither duplicates the other's data-generation logic.
+8. `examples/gesture_recognition/` - Trains a recurrent (RNN) neural network to classify synthetic 3-axis accelerometer "gesture" time-series (the kind of sensor stream a wearable or remote control's IMU would produce) instead of a fixed image dataset -- no data file to download; every training window is generated on the fly by `gesture_data.[ch]`, shared by `train.c` and `test.c` so neither duplicates the other's data-generation logic. `test.c` independently re-evaluates a saved model against a freshly-synthesized batch of windows (unseen by construction, since nothing about `train.c`'s data is ever persisted to disk) and reports a confusion matrix plus per-class/overall accuracy.
 
-9. `test_recognition.c` - Evaluates model performance, comparing predictions to ground truth of seen vs. unseen data.
-
-10. `test_gesture.c` - The `train_gesture.c` counterpart to `test_recognition.c`: independently re-evaluates a saved gesture model against a freshly-synthesized batch of windows (unseen by construction, since nothing about `train_gesture.c`'s data is ever persisted to disk) and reports a confusion matrix plus per-class/overall accuracy.
-
-11. `test_fall.c` - The `train_fall.c` counterpart to `test_recognition.c`: independently re-evaluates a saved fall-detection model against a freshly-synthesized, larger batch of monitoring sequences and reports per-timestep accuracy, recall (falls ever detected), false alarms, and average detection latency.
-
-12. `predict.c` - Demonstrates how to use a trained neural network model in a target application to make predictions on new data.
-
-13. `prune.c` - Removes least contributing neurons from a network to reduce model size and improve performance.
-
-14. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
-
-15. `summary.c` - Describes a model file, including which of the three formats (ASCII, binary, or inplace) it's saved in.
+9. `examples/fall_detection/` - Trains an LSTM neural network to continuously monitor a synthetic 3-axis accelerometer stream (generated by `fall_data.[ch]`) for a fall event -- a multi-phase pattern (free-fall dip, impact spike, then a long stretch of post-fall stillness) spread across a much longer sequence than the gesture example's fixed windows, with a per-timestep (not per-window) label. `test.c` independently re-evaluates a saved model against a freshly-synthesized, larger batch of monitoring sequences and reports per-timestep accuracy, recall (falls ever detected), false alarms, and average detection latency.
 
 ## Features
 
@@ -70,74 +58,88 @@ The following layer types are supported (added one at a time, in order, via `nn_
 * **Pooling** - downsamples a CNN layer's feature maps; Min, Max, or Average (see `pooling_type_t` in nn.h).
 * **Dropout** - training-only regularization that randomly zeroes a configurable fraction of a layer's outputs each step; a no-op pass-through at inference (see `dropout_t` in nn.h).
 * **Recurrent (RNN)** - a single-timestep Elman-style recurrent layer: its hidden state (`neuron[layer]`) persists across calls, so a sequence is processed by calling `nn_train()`/`nn_predict()`/`nn_error()` once per timestep. Call `nn_reset_state()` before starting a new, independent sequence. Trained with the recurrent connection treated as a constant for gradient purposes (truncated BPTT with a truncation depth of 1), so memory use stays flat regardless of sequence length -- consistent with this library's one-sample-at-a-time training model. Width (hidden units) is set directly via `nn_add_layer()`'s `width` argument, same as Fully Connected; it takes no config struct.
-* **Long Short-Term Memory (LSTM)** - like Recurrent (RNN) above (one timestep per call, `nn_reset_state()` between sequences, truncated BPTT depth 1, width set directly, no config struct), but with a second persistent state vector (the cell state, alongside the hidden state) and four internal gates (input, forget, cell-candidate, output) with fixed nonlinearities, more resistant than a plain RNN to vanishing gradients over longer sequences. Should not be used as the network's final layer -- follow it with a normal FC/OUTPUT layer, the same way `train_gesture.c`'s RNN layer is followed by an OUTPUT layer.
+* **Long Short-Term Memory (LSTM)** - like Recurrent (RNN) above (one timestep per call, `nn_reset_state()` between sequences, truncated BPTT depth 1, width set directly, no config struct), but with a second persistent state vector (the cell state, alongside the hidden state) and four internal gates (input, forget, cell-candidate, output) with fixed nonlinearities, more resistant than a plain RNN to vanishing gradients over longer sequences. Should not be used as the network's final layer -- follow it with a normal FC/OUTPUT layer, the same way `examples/gesture_recognition/train.c`'s RNN layer is followed by an OUTPUT layer.
 * **Output** - the network's final layer; computed the same way as Fully Connected, with support for Softmax (see Features above) in addition to the other activation functions.
 
 GRU, Attention, and Transformer layer types are declared in `layer_type_t` but not yet implemented (see TODO below).
 
 ## Instructions
 
-To build the nn library and sample training and prediction programs, just type:
+To build the nn library and the general-purpose model tools (`prune`, `quantize`, `dequantize`, `export`, `import`, `summary`), just type:
 ```
 make
 ```
 
-
-To train:
+Each directory under `examples/` has its own Makefile and is built separately -- building one automatically builds (or reuses) the top-level library first, by recursing into this Makefile for `libnn.a`:
 ```
-./train_recognition model.txt
+cd examples/character_recognition && make  # CNN digit recognition (MNIST)
+cd examples/gesture_recognition && make    # RNN gesture classification
+cd examples/fall_detection && make         # LSTM fall detection
+```
+
+The general-purpose tools below (`prune`, `quantize`, `export`, `summary`, ...) live at the repository root and work on a saved model from *any* example -- run them either from the root with a path into the example's directory (`./prune examples/character_recognition/model.txt 10`), or from inside the example's directory with a relative path back to the tool (`../../prune model.txt 10`).
+
+To train the digit-recognition example:
+```
+cd examples/character_recognition
+./train model.txt
 ```
 The model can be further trained (or fine-tuned) simply by re-running the training program, which further trains a model file if it already exists.
 
 The included example data is the MNIST data set.
 
-To train the RNN gesture-classification example instead (see `train_gesture.c` above -- no data file needed, training/validation windows are synthesized on the fly):
+To train the RNN gesture-classification example instead (no data file needed, training/validation windows are synthesized on the fly):
 ```
-./train_gesture gesture_model.txt
-```
-
-To train the LSTM fall-detection example instead (see `train_fall.c` above -- also no data file needed):
-```
-./train_fall fall_model.txt
+cd examples/gesture_recognition
+./train gesture_model.txt
 ```
 
-To evaluate the model performance:
+To train the LSTM fall-detection example instead (also no data file needed):
 ```
-./test_recognition model.txt
+cd examples/fall_detection
+./train fall_model.txt
+```
+
+To evaluate the digit-recognition model's performance:
+```
+cd examples/character_recognition
+./test model.txt
 ```
 
 To evaluate the gesture-classification model instead (prints a confusion matrix against a fresh, never-before-seen batch of synthesized windows):
 ```
-./test_gesture gesture_model.txt
+cd examples/gesture_recognition
+./test gesture_model.txt
 ```
 
 To evaluate the fall-detection model instead (prints per-timestep accuracy, recall, false alarms, and detection latency against a fresh, larger batch of synthesized sequences):
 ```
-./test_fall fall_model.txt
+cd examples/fall_detection
+./test fall_model.txt
 ```
 
-
-To use the trained model:
+To use a trained digit-recognition model:
 ```
-./predict
-```
-
-To prune the model (this example removes the 10 least contributing neurons):
-
-```
-./prune model.txt 10
+cd examples/character_recognition
+./predict model.txt
 ```
 
-To quantize the trained model (which is floating point by default), run the following command:
+To prune a model (this example removes the 10 least contributing neurons):
 
 ```
-./quantize model.txt model_quantized.txt
+./prune examples/character_recognition/model.txt 10
+```
+
+To quantize a trained model (which is floating point by default), run the following command:
+
+```
+./quantize examples/character_recognition/model.txt model_quantized.txt
 ```
 
 To export a trained model as a flash-resident binary for a microcontroller target, add `--inplace` so `export` writes the zero-copy "inplace" format instead of the regular binary format. `export` accepts any of the three model formats as input (it auto-detects ASCII, binary, or an existing inplace file), so this works directly on whichever one you have:
 
 ```
-./export model.txt model_inplace.bin --inplace
+./export examples/character_recognition/model.txt model_inplace.bin --inplace
 ```
 
 See [Embedding an inplace model as a C header](#embedding-an-inplace-model-as-a-c-header) below for turning that file into a `.h` you can `#include` and pass to `nn_load_model_inplace()`. Omit `--inplace` to instead get the regular binary format (`nn_load_model_binary()`/`nn_load_model_memory()`).
@@ -145,7 +147,7 @@ See [Embedding an inplace model as a C header](#embedding-an-inplace-model-as-a-
 To check which format a model file is in (along with its version, quantization status, and layer-by-layer layout), run:
 
 ```
-./summary model.txt
+./summary examples/character_recognition/model.txt
 ```
 
 ## Architecture
@@ -166,7 +168,7 @@ The model can be saved in the following formats:
 
 * **Binary** - a compact, raw binary encoding of the same information. Every binary model file begins with the 4-byte magic number `NNB1`, followed by the same fields the ASCII format stores (quantized flag, version, layer definitions, weights, and biases), written as raw integers/floats rather than text.
 
-`nn_load_model()` reads a model file's first few bytes and dispatches to the ASCII or binary loader automatically based on the magic number, so any tool that calls it can open either kind of model file without knowing in advance which format it's in. `nn_save_model()` writes binary format when the destination path ends in `.bin` (case-insensitive) and ASCII format otherwise. `train_recognition`, `test_recognition`, `predict`, `prune`, `quantize`, `dequantize`, and `summary` all use these, so passing e.g. `model.bin` instead of `model.txt` is enough to train, evaluate, prune, (de)quantize, or run inference against a binary model file. `nn_load_model_ascii`/`nn_save_model_ascii` and `nn_load_model_binary`/`nn_save_model_binary` remain available for callers that need to force a specific format regardless of extension (as `import` does, to convert binary back to ASCII).
+`nn_load_model()` reads a model file's first few bytes and dispatches to the ASCII or binary loader automatically based on the magic number, so any tool that calls it can open either kind of model file without knowing in advance which format it's in. `nn_save_model()` writes binary format when the destination path ends in `.bin` (case-insensitive) and ASCII format otherwise. Every example's `train`/`test` (and `predict`, for the recognition example), plus `prune`, `quantize`, `dequantize`, and `summary`, all use these, so passing e.g. `model.bin` instead of `model.txt` is enough to train, evaluate, prune, (de)quantize, or run inference against a binary model file. `nn_load_model_ascii`/`nn_save_model_ascii` and `nn_load_model_binary`/`nn_save_model_binary` remain available for callers that need to force a specific format regardless of extension (as `import` does, to convert binary back to ASCII).
 
 `nn_model_format(path)` peeks a file's first few bytes (without loading it) to report which of the three formats -- ASCII, binary, or inplace -- it's in; `summary` uses this to print a `Model Format:` line, and `export` uses it to accept any of the three as input (reading an inplace file into a buffer and loading it with `nn_load_model_inplace()`, since that format has to be read from memory rather than a plain path) regardless of which one it writes as output. `export` also accepts an `--inplace` flag to write the inplace format (below) instead of the regular binary format.
 

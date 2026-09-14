@@ -10,12 +10,13 @@
 
 #include <stdbool.h>
 
-// Synthetic 3-axis accelerometer data for train_fall.c: a continuous
+// Synthetic 3-axis accelerometer data for train.c: a continuous
 // monitoring stream that either stays "normal daily activity" throughout,
 // or contains exactly one fall event (free-fall dip, impact spike, then
-// post-fall stillness) inserted at a random point. Unlike train_gesture.c's
-// fixed one-label-per-window scheme, each timestep here has its own ground
-// truth: 0 throughout a normal sequence, or 0 up to the fall's onset and 1
+// post-fall stillness) inserted at a random point. Unlike
+// examples/gesture_recognition/train.c's fixed one-label-per-window scheme, each
+// timestep here has its own ground truth: 0 throughout a normal sequence,
+// or 0 up to the fall's onset and 1
 // from onset through the end of the sequence (the alert, once raised,
 // stays raised for the rest of this monitoring window) -- closer to how a
 // real always-on embedded monitor actually labels a live stream.

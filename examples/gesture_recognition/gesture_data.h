@@ -8,11 +8,11 @@
 #ifndef GESTURE_DATA_H
 #define GESTURE_DATA_H
 
-// Synthetic 3-axis accelerometer "gesture" data, shared by train_gesture.c
-// (which trains an RNN on it) and test_gesture.c (which independently
-// re-evaluates a saved model against freshly-generated windows the model
-// never saw during training). See train_gesture.c's top-of-file comment for
-// why this is synthesized on the fly instead of read from a dataset file.
+// Synthetic 3-axis accelerometer "gesture" data, shared by train.c (which
+// trains an RNN on it) and test.c (which independently re-evaluates a saved
+// model against freshly-generated windows the model never saw during
+// training). See train.c's top-of-file comment for why this is synthesized
+// on the fly instead of read from a dataset file.
 
 #define NUM_AXES 3    // simulated accelerometer channels: x, y, z
 #define WINDOW_LEN 32 // timesteps (samples) per gesture window

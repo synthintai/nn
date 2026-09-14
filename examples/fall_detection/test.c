@@ -5,9 +5,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Independently re-evaluates a model saved by train_fall.c against a
+// Independently re-evaluates a model saved by train.c against a
 // freshly-synthesized batch of monitoring sequences -- same rationale as
-// test_gesture.c: nothing about train_fall.c's data is ever persisted to
+// examples/gesture_recognition/test.c: nothing about train.c's data is ever persisted to
 // disk, so every sequence generated here is new, unseen by construction,
 // whether or not it happens to resemble something the model trained on.
 // Reports the metrics that actually matter for a fall detector (not just
@@ -28,11 +28,11 @@
 int main(int argc, char *argv[]) {
   if (argc != 2) {
     printf("Usage: %s <model-file>\n", argv[0]);
-    printf("  <model-file> : Path to a model saved by train_fall.c (ascii, binary, or inplace)\n");
+    printf("  <model-file> : Path to a model saved by train.c (ascii, binary, or inplace)\n");
     return 1;
   }
   const char *model_path = argv[1];
-  // Load a previously saved model. See test.c's identical block for why the
+  // Load a previously saved model. See examples/character_recognition/test.c's identical block for why the
   // inplace format needs to be read into a buffer first.
   nn_model_format_t format = nn_model_format(model_path);
   nn_t *model;
@@ -64,7 +64,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   if ((model->width[0] != (uint32_t)NUM_AXES) || (model->width[model->depth - 1] != 1)) {
-    fprintf(stderr, "Error: Model dimensions (%u inputs, %u outputs) don't match the fall-detection task (%d inputs, 1 output) -- is this a train_fall.c model?\n",
+    fprintf(stderr, "Error: Model dimensions (%u inputs, %u outputs) don't match the fall-detection task (%d inputs, 1 output) -- is this a train.c model?\n",
             model->width[0], model->width[model->depth - 1], NUM_AXES);
     nn_free(model);
     free(inplace_buf);

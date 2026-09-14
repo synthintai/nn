@@ -5,14 +5,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Independently re-evaluates a model saved by train_gesture.c against a
-// freshly-synthesized batch of gesture windows -- unlike test.c (which
-// re-loads train.csv/test.csv, fixed files carved out once by split.py),
+// Independently re-evaluates a model saved by train.c against a
+// freshly-synthesized batch of gesture windows -- unlike examples/character_recognition/test.c
+// (which re-loads train.csv/test.csv, fixed files carved out once by split.py),
 // there is nothing to load here: every window generate_gesture() produces
 // is new, so it's unseen by construction, whether or not it happens to
 // overlap in spirit with whatever the model trained on. Reports a
 // confusion matrix and per-class/overall accuracy, a more independent
-// readout than train_gesture.c's own final validation accuracy (which is
+// readout than train.c's own final validation accuracy (which is
 // measured against the same fixed validation set early stopping used to
 // pick the saved model).
 
@@ -29,11 +29,11 @@
 int main(int argc, char *argv[]) {
   if (argc != 2) {
     printf("Usage: %s <model-file>\n", argv[0]);
-    printf("  <model-file> : Path to a model saved by train_gesture.c (ascii, binary, or inplace)\n");
+    printf("  <model-file> : Path to a model saved by train.c (ascii, binary, or inplace)\n");
     return 1;
   }
   const char *model_path = argv[1];
-  // Load a previously saved model. See test.c's identical block for why the
+  // Load a previously saved model. See examples/character_recognition/test.c's identical block for why the
   // inplace format needs to be read into a buffer first.
   nn_model_format_t format = nn_model_format(model_path);
   nn_t *model;
@@ -65,7 +65,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
   if ((model->width[0] != (uint32_t)NUM_AXES) || (model->width[model->depth - 1] != (uint32_t)GESTURE_COUNT)) {
-    fprintf(stderr, "Error: Model dimensions (%u inputs, %u outputs) don't match the gesture task (%d inputs, %d outputs) -- is this a train_gesture.c model?\n",
+    fprintf(stderr, "Error: Model dimensions (%u inputs, %u outputs) don't match the gesture task (%d inputs, %d outputs) -- is this a train.c model?\n",
             model->width[0], model->width[model->depth - 1], NUM_AXES, GESTURE_COUNT);
     nn_free(model);
     free(inplace_buf);
@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
       float window[WINDOW_LEN][NUM_AXES];
       generate_gesture((gesture_t)actual, window);
       // Classify off the final timestep's output, same convention
-      // train_gesture.c's own end-of-run accuracy readout uses: the RNN's
+      // train.c's own end-of-run accuracy readout uses: the RNN's
       // hidden state has by then seen the whole window.
       nn_reset_state(model);
       float *out = NULL;

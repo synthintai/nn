@@ -8,7 +8,7 @@
 // Example: training an LSTM layer to continuously monitor a simulated
 // 3-axis accelerometer stream -- the kind of always-on sensor processing a
 // fall-detection wearable or medical-alert pendant does -- and flag a fall
-// as soon as one occurs. Unlike train_gesture.c's RNN (which classifies one
+// as soon as one occurs. Unlike examples/gesture_recognition/train.c's RNN (which classifies one
 // short, fixed-length gesture window with a single label), a fall event
 // here is a multi-phase pattern (a brief free-fall dip, an impact spike,
 // then a long stretch of unusual post-fall stillness) spread across a much
@@ -20,7 +20,7 @@
 // afterward -- exactly the kind of "hold relevant context, let go of
 // irrelevant context" job LSTM's gated cell state is for, more than a plain
 // RNN's hidden state is (see LAYER_TYPE_LSTM's comment in nn.h). As with
-// train_gesture.c, every sequence is synthesized on the fly (see
+// examples/gesture_recognition/train.c, every sequence is synthesized on the fly (see
 // fall_data.[ch]) -- there is nothing to download.
 
 #include <float.h>
@@ -33,7 +33,7 @@
 #include "fall_data.h"
 #include "nn.h"
 
-// See train.c's identical constants for the early-stopping rationale.
+// See examples/character_recognition/train.c's identical constants for the early-stopping rationale.
 #define EARLY_STOPPING_PATIENCE 5
 #define MAX_EPOCHS 500
 
@@ -45,7 +45,7 @@
 // label every 3rd timestep -- enough to see the free-fall dip, impact
 // spike, and post-fall stillness in the fall example, and confirm the
 // normal-activity example never looks like one. See
-// train_gesture.c's print_sample_gestures() for the same rationale.
+// examples/gesture_recognition/train.c's print_sample_gestures() for the same rationale.
 static void print_sample_sequences(void)
 {
   static float window[SEQUENCE_LEN][NUM_AXES];
@@ -68,7 +68,7 @@ static void print_sample_sequences(void)
 // Runs one whole sequence through the network, timestep by timestep,
 // training (or, when `train` is false, just measuring error via
 // nn_error()) against THAT timestep's own label -- unlike
-// train_gesture.c's run_window(), which repeats one label for the whole
+// examples/gesture_recognition/train.c's run_window(), which repeats one label for the whole
 // window, every timestep here can have a different target. Always starts
 // by resetting the LSTM's hidden AND cell state (nn_reset_state()): each
 // sequence is an independent monitoring window, and the previous one's
@@ -126,7 +126,7 @@ int main(int argc, char *argv[]) {
     num_validation++;
   }
 
-  // Attempt to load an existing model; see train.c's identical block for
+  // Attempt to load an existing model; see examples/character_recognition/train.c's identical block for
   // why the inplace format needs nn_load_model_inplace_copy() instead of
   // plain nn_load_model() to keep training.
   nn_model_format_t existing_format = nn_model_format(model_path);
@@ -174,7 +174,7 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
-  // See train.c's identical block for why this baseline matters when
+  // See examples/character_recognition/train.c's identical block for why this baseline matters when
   // resuming an existing model.
   float best_validation_error = FLT_MAX;
   if (resuming) {
@@ -209,7 +209,7 @@ int main(int argc, char *argv[]) {
       best_validation_error = validation_error;
       epochs_since_improvement = 0;
       // Save back in the same format the model was loaded from when
-      // resuming, same rationale as train.c's identical block.
+      // resuming, same rationale as examples/character_recognition/train.c's identical block.
       if (resuming && existing_format == NN_MODEL_FORMAT_INPLACE) {
         nn_save_model_inplace(nn, (char *)model_path);
       } else if (resuming && existing_format == NN_MODEL_FORMAT_BINARY) {

@@ -94,10 +94,10 @@ typedef enum {
   // activation-derivative multiply every other layer type's backprop uses.
   // Because of that, LAYER_TYPE_LSTM should not be used as the network's
   // final layer -- follow it with a normal FC/OUTPUT layer, the same way
-  // the RNN gesture-classification example (train_gesture.c) follows its
-  // RNN layer with an OUTPUT layer. See the comment above
-  // forward_propagation()'s LAYER_TYPE_LSTM case in nn.c for the weight
-  // layout and full rationale.
+  // the RNN gesture-classification example
+  // (examples/gesture_recognition/train.c) follows its RNN layer with an
+  // OUTPUT layer. See the comment above forward_propagation()'s
+  // LAYER_TYPE_LSTM case in nn.c for the weight layout and full rationale.
   LAYER_TYPE_LSTM,
   LAYER_TYPE_GRU,        // Gated Recurrent Unit Layer - Not yet implemented
   // Recurrent (Elman) Neural Network Layer. Width (the number of hidden

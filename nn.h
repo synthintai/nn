@@ -296,36 +296,6 @@ typedef struct {
   // instead of nn->loss[layer] (repurposed as scratch space for this layer
   // type, same as for LSTM -- see nn_train()'s LAYER_TYPE_GRU handling in nn.c).
   float **gru_gate_grad;
-  // Opt-in, only meaningful while `quantized` is also true: when set (via
-  // nn_set_int8_inference()), forward_propagation()'s quantized branches
-  // additionally quantize each layer's input activation(s) to int8 (a fresh,
-  // symmetric, per-call scale derived from that call's own actual activation
-  // values -- no calibration dataset needed, the same way weight_scale is
-  // derived from the model's own weight values at nn_quantize() time, just
-  // computed at inference time instead since activations vary every call)
-  // and accumulate each neuron's dot product as int32, rescaling to float
-  // once per output neuron afterward. This is what makes the *dominant*
-  // O(row_len) multiply-accumulate loop pure integer arithmetic, needing no
-  // FPU. Without it (the default), `quantized` alone still stores weights as
-  // int8 for a smaller model, but every multiply-accumulate in the loop
-  // itself is `float_activation * (float)int8_weight` -- a float op per
-  // weight either way. Defaults to false so nn_quantize()'s existing numeric
-  // behavior is unchanged unless explicitly opted into: quantizing
-  // activations too introduces additional (typically small) rounding error
-  // beyond int8-weight-only quantization. Has no effect while `quantized` is
-  // false. Never set this directly -- use nn_set_int8_inference(), which
-  // also sizes act_quantized below.
-  bool int8_inference;
-  // Scratch buffer for int8_inference: one layer's quantized input
-  // activation(s) (this layer's previous-layer output for FC/OUTPUT/CNN;
-  // that plus this same layer's own previous-timestep hidden state,
-  // concatenated, for RNN/LSTM/GRU -- see the int8_inference branch of each
-  // case in forward_propagation()). Reused every layer, every call -- sized
-  // once (by nn_set_int8_inference(), and kept in step by nn_add_layer()) to
-  // the model's single largest per-layer requirement, so forward_propagation()
-  // itself never allocates. NULL whenever int8_inference is false.
-  int8_t *act_quantized;
-  size_t act_quantized_cap; // current allocated size of act_quantized, in bytes/elements
   // True only for a model returned by nn_load_model_inplace(): weight,
   // weight_quantized, weight_scale, and bias/bias_quantized then point
   // directly into the caller's (read-only, e.g. flash-resident) buffer
@@ -421,16 +391,5 @@ nn_error_t nn_dequantize(nn_t *nn);
 // the always-owned neuron[]/lstm_cell[] buffers, never the aliased
 // weight/bias arrays.
 void nn_reset_state(nn_t *nn);
-// Enables (enable == true) or disables (false) the fully-integer quantized
-// inference path -- see nn->int8_inference's comment above for what it does
-// and why it's opt-in. Sizes/grows nn->act_quantized for the model's current
-// layers when enabling; safe to call before or after nn_quantize() (sizing
-// only depends on layer_type/width, not on whether the model has actually
-// been quantized yet), and safe on an immutable (nn_load_model_inplace())
-// model. Has no effect on a model with no layers yet -- call again (or rely
-// on nn_add_layer()'s own top-up) once layers exist. On an allocation
-// failure while growing act_quantized, leaves int8_inference disabled and
-// prints a warning rather than leaving a too-small buffer in place.
-void nn_set_int8_inference(nn_t *nn, bool enable);
 
 #endif /* NN_H */

@@ -274,6 +274,85 @@ static void quantized_layer_shape(nn_t *nn, int L, int *rows, int *row_len, int 
   }
 }
 
+// (Re)allocates layer `layer`'s four optimizer moment buffers
+// (weight_moment1/2, bias_moment1/2) to match nn->optimizer, freeing
+// whichever of the four this optimizer doesn't need and zeroing whichever
+// it does -- see their comment in nn.h. A no-op (all four end up NULL) for
+// NN_OPTIMIZER_SGD, or for a layer type with no weights of its own (POOL/
+// DROPOUT). Used by nn_add_layer() (a new layer, if an optimizer needing
+// this state is already selected), nn_set_optimizer() (every existing
+// layer, when switching optimizers), nn_dequantize() (every layer, since
+// nn_quantize() always frees this state first), and nn_remove_neuron()
+// (the two reshaped layers -- which resets rather than migrates this state,
+// see its own comment). Returns false only on a real allocation failure.
+static bool nn_optimizer_alloc_layer(nn_t *nn, int layer)
+{
+  free(nn->weight_moment1[layer]); nn->weight_moment1[layer] = NULL;
+  free(nn->weight_moment2[layer]); nn->weight_moment2[layer] = NULL;
+  free(nn->bias_moment1[layer]); nn->bias_moment1[layer] = NULL;
+  free(nn->bias_moment2[layer]); nn->bias_moment2[layer] = NULL;
+  if (nn->optimizer == NN_OPTIMIZER_SGD)
+    return true;
+  if (nn->layer_type[layer] == LAYER_TYPE_POOL || nn->layer_type[layer] == LAYER_TYPE_DROPOUT)
+    return true; // no weights/bias to optimize
+  int rows, row_len, bias_count;
+  quantized_layer_shape(nn, layer, &rows, &row_len, &bias_count);
+  nn->weight_moment1[layer] = (float *)calloc((size_t)rows * row_len, sizeof(float));
+  nn->bias_moment1[layer] = (float *)calloc((size_t)bias_count, sizeof(float));
+  if (!nn->weight_moment1[layer] || !nn->bias_moment1[layer])
+    return false;
+  if (nn->optimizer == NN_OPTIMIZER_ADAM) {
+    nn->weight_moment2[layer] = (float *)calloc((size_t)rows * row_len, sizeof(float));
+    nn->bias_moment2[layer] = (float *)calloc((size_t)bias_count, sizeof(float));
+    if (!nn->weight_moment2[layer] || !nn->bias_moment2[layer])
+      return false;
+  }
+  return true;
+}
+
+// Applies one optimizer step to `total` contiguous elements of a weight or
+// bias buffer (`param[idx] += f(grad[idx])`, `grad` already carrying
+// whatever sign convention makes a plain "+=" move toward lower loss --
+// exactly the quantity nn_train() already computes into weight_adj/a bias's
+// own gradient today), using whichever of SGD/MOMENTUM/ADAM nn->optimizer
+// currently selects. The switch is hoisted out to run once per call (i.e.
+// once per layer, not once per weight), same rationale as the quantized/
+// float branch hoisting elsewhere in this file. `moment1`/`moment2` are
+// that layer's own weight_moment1[i]/weight_moment2[i] (or
+// bias_moment1[i]/bias_moment2[i] for a bias update) -- unused (and may be
+// NULL) under NN_OPTIMIZER_SGD.
+static void nn_optimizer_apply(nn_t *nn, float *param, const float *grad, float *moment1, float *moment2, int total, float rate)
+{
+  switch (nn->optimizer) {
+    case NN_OPTIMIZER_MOMENTUM:
+      for (int idx = 0; idx < total; idx++) {
+        moment1[idx] = nn->optimizer_momentum * moment1[idx] + grad[idx];
+        param[idx] += moment1[idx] * rate;
+      }
+      break;
+    case NN_OPTIMIZER_ADAM: {
+      const float beta1 = nn->optimizer_momentum;
+      const float beta2 = nn->optimizer_beta2;
+      const float epsilon = nn->optimizer_epsilon;
+      const float bias_correction1 = 1.0f - powf(beta1, (float)nn->adam_step);
+      const float bias_correction2 = 1.0f - powf(beta2, (float)nn->adam_step);
+      for (int idx = 0; idx < total; idx++) {
+        moment1[idx] = beta1 * moment1[idx] + (1.0f - beta1) * grad[idx];
+        moment2[idx] = beta2 * moment2[idx] + (1.0f - beta2) * grad[idx] * grad[idx];
+        float m_hat = moment1[idx] / bias_correction1;
+        float v_hat = moment2[idx] / bias_correction2;
+        param[idx] += rate * m_hat / (sqrtf(v_hat) + epsilon);
+      }
+      break;
+    }
+    case NN_OPTIMIZER_SGD:
+    default:
+      for (int idx = 0; idx < total; idx++)
+        param[idx] += grad[idx] * rate;
+      break;
+  }
+}
+
 // 2D pooling layer forward pass over the previous layer's (float) feature
 // maps. Supports MIN/MAX ("winner take all", cached for backprop routing)
 // and AVG (uniform reduction) pooling. Pooling has no weights/bias and no
@@ -1016,6 +1095,19 @@ nn_t *nn_init(void)
   nn->lstm_gate_grad = NULL;
   nn->gru_cache = NULL;
   nn->gru_gate_grad = NULL;
+  // Optimizer defaults to plain SGD (value 0), matching this library's
+  // original behavior exactly -- no persistent per-weight state, and the
+  // hyperparameter fields/moment buffers below are simply unused until
+  // nn_set_optimizer() selects something else.
+  nn->optimizer = NN_OPTIMIZER_SGD;
+  nn->optimizer_momentum = 0.0f;
+  nn->optimizer_beta2 = 0.0f;
+  nn->optimizer_epsilon = 0.0f;
+  nn->adam_step = 0;
+  nn->weight_moment1 = NULL;
+  nn->weight_moment2 = NULL;
+  nn->bias_moment1 = NULL;
+  nn->bias_moment2 = NULL;
   nn->immutable = false;
   return nn;
 }
@@ -1040,6 +1132,12 @@ void nn_free(nn_t *nn)
       }
       free(nn->weight_adj[layer]);
       free(nn->weight_scale[layer]);
+      // Optimizer moment buffers: NULL (free() no-ops) unless
+      // nn_set_optimizer() selected MOMENTUM/ADAM -- see their comment in nn.h.
+      free(nn->weight_moment1[layer]);
+      free(nn->weight_moment2[layer]);
+      free(nn->bias_moment1[layer]);
+      free(nn->bias_moment2[layer]);
       free(nn->config[layer]);
       free(nn->neuron[layer]);
       free(nn->loss[layer]);
@@ -1048,8 +1146,12 @@ void nn_free(nn_t *nn)
     free(nn->weight);
     free(nn->weight_adj);
     free(nn->weight_scale);
+    free(nn->weight_moment1);
+    free(nn->weight_moment2);
     free(nn->bias);
     free(nn->bias_scale);
+    free(nn->bias_moment1);
+    free(nn->bias_moment2);
     free(nn->neuron);
     free(nn->loss);
     free(nn->preact);
@@ -1326,6 +1428,22 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
   if (nn->gru_gate_grad == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
   nn->gru_gate_grad[nn->depth - 1] = NULL;
+  nn->weight_moment1 = (float **)realloc(nn->weight_moment1, (nn->depth) * sizeof(float *));
+  if (nn->weight_moment1 == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->weight_moment1[nn->depth - 1] = NULL;
+  nn->weight_moment2 = (float **)realloc(nn->weight_moment2, (nn->depth) * sizeof(float *));
+  if (nn->weight_moment2 == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->weight_moment2[nn->depth - 1] = NULL;
+  nn->bias_moment1 = (float **)realloc(nn->bias_moment1, (nn->depth) * sizeof(float *));
+  if (nn->bias_moment1 == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->bias_moment1[nn->depth - 1] = NULL;
+  nn->bias_moment2 = (float **)realloc(nn->bias_moment2, (nn->depth) * sizeof(float *));
+  if (nn->bias_moment2 == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->bias_moment2[nn->depth - 1] = NULL;
   // For layer 0, we do not allocate neuron/loss/preact (input is provided externally)
   if (nn->depth > 1) {
     nn->neuron[nn->depth - 1] = (float *)malloc(nn->width[nn->depth - 1] * sizeof(float));
@@ -1461,6 +1579,17 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
       }
     }
   }
+  // If an optimizer needing persistent per-weight state was already
+  // selected (nn_set_optimizer() called before this layer was added), give
+  // the new layer its own moment buffers too -- see
+  // nn_optimizer_alloc_layer()'s comment. A no-op under NN_OPTIMIZER_SGD
+  // (the default), and only runs at model-construction time, never inside
+  // the hot training/inference path. Layer 0 (the INPUT layer) never has
+  // weights of its own -- quantized_layer_shape() assumes a previous layer
+  // exists, so this is skipped for it the same way weight/weight_adj/bias
+  // themselves are above.
+  if (nn->depth > 1 && !nn_optimizer_alloc_layer(nn, (int)nn->depth - 1))
+    return NN_ERROR_OUT_OF_MEMORY;
   return NN_ERROR_NONE;
 }
 
@@ -1784,7 +1913,11 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       }
     }
   }
-  // Update biases (gradient descent step)
+  // Adam's step counter: one increment per nn_train() call, shared across
+  // every layer's update within this call (see its comment in nn.h). Cheap
+  // to bump unconditionally; only ever read back under NN_OPTIMIZER_ADAM.
+  nn->adam_step++;
+  // Update biases (optimizer step -- SGD/MOMENTUM/ADAM, see nn_optimizer_apply())
   for (i = 1; i < (int)nn->depth; i++) {
     if (nn->layer_type[i] == LAYER_TYPE_CNN) {
       cnn_t *cnn = nn->config[i];
@@ -1792,30 +1925,28 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       int x_out  = cnn->out_w;
       int y_out  = cnn->out_h;
       int plane  = x_out * y_out;
+      float db[256]; // out_channels is a uint8_t (max 255)
       for (j = 0; j < out_c; ++j) {
-        float db = 0.0f;
+        db[j] = 0.0f;
         for (k = 0; k < plane; ++k)
-          db += nn->loss[i][j * plane + k];
-        nn->bias[i][j] += db * rate;
+          db[j] += nn->loss[i][j * plane + k];
       }
+      nn_optimizer_apply(nn, nn->bias[i], db, nn->bias_moment1[i], nn->bias_moment2[i], out_c, rate);
     } else if (nn->layer_type[i] == LAYER_TYPE_POOL || nn->layer_type[i] == LAYER_TYPE_DROPOUT) {
       // Pooling and dropout both have no bias
     } else if (nn->layer_type[i] == LAYER_TYPE_LSTM) {
       // 4*hidden biases (one per gate per hidden unit); the gradient for
       // each comes from lstm_gate_grad[i], not loss[i] (which is repurposed
       // as scratch space for this layer type -- see the backprop loop above).
-      for (j = 0; j < 4 * (int)nn->width[i]; j++)
-        nn->bias[i][j] += nn->lstm_gate_grad[i][j] * rate;
+      nn_optimizer_apply(nn, nn->bias[i], nn->lstm_gate_grad[i], nn->bias_moment1[i], nn->bias_moment2[i], 4 * (int)nn->width[i], rate);
     } else if (nn->layer_type[i] == LAYER_TYPE_GRU) {
       // 3*hidden biases (one per gate per hidden unit); the gradient for
       // each comes from gru_gate_grad[i], not loss[i] (which is repurposed
       // as scratch space for this layer type -- see the backprop loop above).
-      for (j = 0; j < 3 * (int)nn->width[i]; j++)
-        nn->bias[i][j] += nn->gru_gate_grad[i][j] * rate;
+      nn_optimizer_apply(nn, nn->bias[i], nn->gru_gate_grad[i], nn->bias_moment1[i], nn->bias_moment2[i], 3 * (int)nn->width[i], rate);
     } else {
-        // FC / output layers
-        for (j = 0; j < (int)nn->width[i]; j++)
-            nn->bias[i][j] += nn->loss[i][j] * rate;
+      // FC / output layers
+      nn_optimizer_apply(nn, nn->bias[i], nn->loss[i], nn->bias_moment1[i], nn->bias_moment2[i], (int)nn->width[i], rate);
     }
   }
   // Calculate the weight adjustments. Note that their update is delayed until
@@ -1938,15 +2069,18 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
           nn->weight_adj[i][j * row_len + k] = nn->loss[i][j] * nn->neuron[i - 1][k];
     }
   }
-  // Apply weight adjustments
+  // Apply weight adjustments (optimizer step -- SGD/MOMENTUM/ADAM, see
+  // nn_optimizer_apply()). Once weight_adj is filled, this pass is
+  // identical mechanically regardless of which layer type produced it --
+  // just a different element count -- so every branch below only computes
+  // `total` and defers the actual update to the shared helper.
   for (i = (int)nn->depth - 1; i > 0; i--) {
     if (nn->layer_type[i] == LAYER_TYPE_CNN) {
       cnn_t *cnn = nn->config[i];
       int kernels = cnn->out_channels * cnn->in_channels;
       int k_elems = cnn->kernel_size * cnn->kernel_size;
       int total = kernels * k_elems;
-      for (int idx = 0; idx < total; ++idx)
-        nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
+      nn_optimizer_apply(nn, nn->weight[i], nn->weight_adj[i], nn->weight_moment1[i], nn->weight_moment2[i], total, rate);
     } else if (nn->layer_type[i] == LAYER_TYPE_POOL || nn->layer_type[i] == LAYER_TYPE_DROPOUT) {
       // Pooling and dropout both have no weights
     } else if (nn->layer_type[i] == LAYER_TYPE_RNN) {
@@ -1955,29 +2089,25 @@ float nn_train(nn_t *nn, float *inputs, float *targets, float rate)
       // above, so a single flat update over the whole row-major buffer
       // updates both halves correctly.
       int total = (int)nn->width[i] * ((int)nn->width[i - 1] + (int)nn->width[i]);
-      for (int idx = 0; idx < total; ++idx)
-        nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
+      nn_optimizer_apply(nn, nn->weight[i], nn->weight_adj[i], nn->weight_moment1[i], nn->weight_moment2[i], total, rate);
     } else if (nn->layer_type[i] == LAYER_TYPE_LSTM) {
       // Same idea as RNN above, but 4x the rows (one per gate per hidden
       // unit -- see quantized_layer_shape()).
       int rows, row_len, bias_count;
       quantized_layer_shape(nn, i, &rows, &row_len, &bias_count);
       int total = rows * row_len;
-      for (int idx = 0; idx < total; ++idx)
-        nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
+      nn_optimizer_apply(nn, nn->weight[i], nn->weight_adj[i], nn->weight_moment1[i], nn->weight_moment2[i], total, rate);
     } else if (nn->layer_type[i] == LAYER_TYPE_GRU) {
       // Same idea as RNN/LSTM above, but 3x the rows (one per gate per
       // hidden unit -- see quantized_layer_shape()).
       int rows, row_len, bias_count;
       quantized_layer_shape(nn, i, &rows, &row_len, &bias_count);
       int total = rows * row_len;
-      for (int idx = 0; idx < total; ++idx)
-        nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
+      nn_optimizer_apply(nn, nn->weight[i], nn->weight_adj[i], nn->weight_moment1[i], nn->weight_moment2[i], total, rate);
     } else {
       // FC / output layers
       int total = (int)nn->width[i] * (int)nn->width[i - 1];
-      for (int idx = 0; idx < total; ++idx)
-        nn->weight[i][idx] += nn->weight_adj[i][idx] * rate;
+      nn_optimizer_apply(nn, nn->weight[i], nn->weight_adj[i], nn->weight_moment1[i], nn->weight_moment2[i], total, rate);
     }
   }
   // Return the pre-update error computed above
@@ -2009,6 +2139,41 @@ void nn_reset_state(nn_t *nn)
     if (nn->layer_type[layer] == LAYER_TYPE_LSTM)
       memset(nn->lstm_cell[layer], 0, (size_t)nn->width[layer] * sizeof(float));
   }
+}
+
+nn_error_t nn_set_optimizer(nn_t *nn, nn_optimizer_t optimizer, float momentum, float beta2, float epsilon)
+{
+  if (!nn) {
+    return NN_ERROR_INVALID_ARGUMENT;
+  }
+  if (nn->immutable) {
+    // Same reasoning as nn_train() itself: nothing writable to optimize.
+    return NN_ERROR_READ_ONLY_MODEL;
+  }
+  nn->optimizer = optimizer;
+  nn->optimizer_momentum = momentum;
+  nn->optimizer_beta2 = beta2;
+  nn->optimizer_epsilon = epsilon;
+  // Any prior optimizer's accumulated history no longer applies (the
+  // buffers are about to be freed/reallocated below anyway) -- and a fresh
+  // Adam run should always get its own proper warmup rather than picking up
+  // a stale step count, even when switching back to ADAM after a detour
+  // through another optimizer.
+  nn->adam_step = 0;
+  // A quantized model has no moment buffers at all right now (nn_quantize()
+  // already freed them) and can't train until dequantized -- nn_dequantize()
+  // will call nn_optimizer_alloc_layer() itself at that point, using
+  // whatever `optimizer`/hyperparameters were just set here. Nothing further
+  // to allocate immediately in that case.
+  if (nn->quantized) {
+    return NN_ERROR_NONE;
+  }
+  for (int layer = 1; layer < (int)nn->depth; layer++) {
+    if (!nn_optimizer_alloc_layer(nn, layer)) {
+      return NN_ERROR_OUT_OF_MEMORY;
+    }
+  }
+  return NN_ERROR_NONE;
 }
 
 // Loads a neural net model from a file.
@@ -2762,6 +2927,15 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
   nn->lstm_gate_grad = NULL;
   nn->gru_cache = NULL;
   nn->gru_gate_grad = NULL;
+  nn->optimizer = NN_OPTIMIZER_SGD;
+  nn->optimizer_momentum = 0.0f;
+  nn->optimizer_beta2 = 0.0f;
+  nn->optimizer_epsilon = 0.0f;
+  nn->adam_step = 0;
+  nn->weight_moment1 = NULL;
+  nn->weight_moment2 = NULL;
+  nn->bias_moment1 = NULL;
+  nn->bias_moment2 = NULL;
 
   // Allocate every top-level array up front, all sized to `depth` and
   // zeroed, before touching nn->depth: nn_free() indexes every layer <
@@ -2821,7 +2995,17 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
     nn->weight = (float **)calloc(depth, sizeof(*nn->weight));
     nn->weight_adj = (float **)calloc(depth, sizeof(*nn->weight_adj));
     nn->bias = (float **)calloc(depth, sizeof(*nn->bias));
-    top_level_ok = top_level_ok && nn->weight && nn->weight_adj && nn->bias;
+    // Optimizer moment buffers, same top-level-only allocation as
+    // weight_adj: every entry starts NULL (nn->optimizer is NN_OPTIMIZER_SGD
+    // by default, set below), and stays that way unless/until a caller
+    // later calls nn_set_optimizer() on this (necessarily mutable, copy ==
+    // true) model.
+    nn->weight_moment1 = (float **)calloc(depth, sizeof(*nn->weight_moment1));
+    nn->weight_moment2 = (float **)calloc(depth, sizeof(*nn->weight_moment2));
+    nn->bias_moment1 = (float **)calloc(depth, sizeof(*nn->bias_moment1));
+    nn->bias_moment2 = (float **)calloc(depth, sizeof(*nn->bias_moment2));
+    top_level_ok = top_level_ok && nn->weight && nn->weight_adj && nn->bias &&
+      nn->weight_moment1 && nn->weight_moment2 && nn->bias_moment1 && nn->bias_moment2;
   }
   if (!top_level_ok) {
     nn_free(nn);
@@ -3433,6 +3617,20 @@ nn_error_t nn_remove_neuron(nn_t *nn, int layer, int neuron_index)
   }
   // Decrement the width of this layer
   nn->width[layer] = old_width - 1;
+  // Reset (not migrate) this layer's and layer+1's optimizer moment
+  // buffers to match their new shape: unlike weight/bias themselves, this
+  // state has no well-defined per-weight correspondence to preserve across
+  // a reshape (see nn_optimizer_alloc_layer()'s comment) -- restarting a
+  // few steps of momentum/Adam warmup right after a prune is a negligible,
+  // one-time cost next to the alternative of migrating it element-by-
+  // element. Only relevant for a mutable float model -- a quantized one has
+  // no moment buffers to begin with (nn_quantize() already freed them).
+  if (!nn->quantized) {
+    if (!nn_optimizer_alloc_layer(nn, layer))
+      return NN_ERROR_OUT_OF_MEMORY;
+    if (layer + 1 < (int)nn->depth && !nn_optimizer_alloc_layer(nn, layer + 1))
+      return NN_ERROR_OUT_OF_MEMORY;
+  }
   return NN_ERROR_NONE;
 }
 
@@ -3796,13 +3994,29 @@ nn_error_t nn_quantize(nn_t *nn)
     free(nn->weight[L]);
     free(nn->weight_adj[L]);
     free(nn->bias[L]);
+    // Optimizer moment buffers, if any (see nn_t's comment): a quantized
+    // model can't train (nn_train() dequantizes first), so there's nothing
+    // left to hold this state for. nn_dequantize() reallocates fresh,
+    // zeroed buffers if `optimizer` still calls for them.
+    free(nn->weight_moment1[L]);
+    free(nn->weight_moment2[L]);
+    free(nn->bias_moment1[L]);
+    free(nn->bias_moment2[L]);
   }
   free(nn->weight);
   free(nn->weight_adj);
   free(nn->bias);
+  free(nn->weight_moment1);
+  free(nn->weight_moment2);
+  free(nn->bias_moment1);
+  free(nn->bias_moment2);
   nn->weight = NULL;
   nn->weight_adj = NULL;
   nn->bias = NULL;
+  nn->weight_moment1 = NULL;
+  nn->weight_moment2 = NULL;
+  nn->bias_moment1 = NULL;
+  nn->bias_moment2 = NULL;
   return NN_ERROR_NONE;
 }
 
@@ -3824,7 +4038,15 @@ nn_error_t nn_dequantize(nn_t *nn)
   nn->weight = malloc(depth * sizeof(*nn->weight));
   nn->weight_adj = malloc(depth * sizeof(*nn->weight_adj));
   nn->bias = malloc(depth * sizeof(*nn->bias));
-  if (!nn->weight || !nn->weight_adj || !nn->bias) {
+  // Optimizer moment buffers: calloc (not malloc) so every slot starts NULL
+  // -- nn_optimizer_alloc_layer() below then (re)allocates only the ones
+  // `optimizer` actually calls for, same as a freshly-added layer.
+  nn->weight_moment1 = calloc(depth, sizeof(*nn->weight_moment1));
+  nn->weight_moment2 = calloc(depth, sizeof(*nn->weight_moment2));
+  nn->bias_moment1 = calloc(depth, sizeof(*nn->bias_moment1));
+  nn->bias_moment2 = calloc(depth, sizeof(*nn->bias_moment2));
+  if (!nn->weight || !nn->weight_adj || !nn->bias ||
+      !nn->weight_moment1 || !nn->weight_moment2 || !nn->bias_moment1 || !nn->bias_moment2) {
     return NN_ERROR_OUT_OF_MEMORY;
   }
   nn->weight[0] = NULL;
@@ -3863,6 +4085,11 @@ nn_error_t nn_dequantize(nn_t *nn)
     for (int i = 0; i < bias_count; i++) {
       nn->bias[L][i] = nn->bias_quantized[L][i] * nn->bias_scale[L];
     }
+    // Give this layer fresh, zeroed optimizer moment buffers if `optimizer`
+    // still calls for them (nn_quantize() always freed whatever this layer
+    // had before) -- a no-op under NN_OPTIMIZER_SGD.
+    if (!nn_optimizer_alloc_layer(nn, L))
+      return NN_ERROR_OUT_OF_MEMORY;
     // Free per-layer quant arrays
     free(nn->weight_quantized[L]);
     free(nn->weight_scale[L]);

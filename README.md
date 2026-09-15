@@ -54,6 +54,8 @@ Different activation functions may be assigned to each layer in the network.
 
 A bias can be added to each layer independently.
 
+`nn_train()` defaults to plain SGD (`weight += gradient * rate`, no extra memory beyond the model itself), but the optimizer is selectable via `nn_set_optimizer(nn, optimizer, momentum, beta2, epsilon)`: `NN_OPTIMIZER_MOMENTUM` (classic momentum, +1 float of persistent state per weight/bias) or `NN_OPTIMIZER_ADAM` (+2 floats per weight/bias) typically converge faster/more reliably than plain SGD, at that extra RAM cost. This is a genuine tradeoff worth thinking about for a model that needs to keep training in the field (as new samples become available on a deployed device) rather than just once, offline, before deployment: pick whichever optimizer fits the RAM you can spare on that specific target. None of this state is ever written to a saved model file, though (see `nn_save_model_ascii()`/`nn_save_model_binary()`) -- like the existing `weight_adj` gradient scratch, it's purely a RAM-side training aid, so a model saved mid-training and reloaded later always resumes with a fresh optimizer warmup, regardless of which optimizer produced it. See `nn_optimizer_t` and `nn_set_optimizer()`'s comments in `nn.h` for the full details.
+
 The following layer types are supported (added one at a time, in order, via `nn_add_layer()`):
 
 * **Input** - holds the network's input values; has no weights, bias, or activation of its own.

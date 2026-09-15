@@ -150,6 +150,14 @@ typedef enum {
   POOLING_TYPE_AVG,
 } pooling_type_t;
 
+// Selects how nn_train() turns a computed gradient (weight_adj[layer]/a
+// bias's own gradient) into a weight/bias update -- see nn_set_optimizer().
+typedef enum {
+  NN_OPTIMIZER_SGD = 0,  // param += grad * rate. No persistent state; today's original behavior.
+  NN_OPTIMIZER_MOMENTUM, // Classic momentum: one persistent "velocity" accumulator per weight/bias.
+  NN_OPTIMIZER_ADAM,     // Adam: two persistent accumulators (first/second moment) per weight/bias.
+} nn_optimizer_t;
+
 typedef enum {
   NN_INIT_NONE = 0,      // No initialization
   NN_INIT_ZEROS,         // Initialize weights to zero
@@ -296,6 +304,56 @@ typedef struct {
   // instead of nn->loss[layer] (repurposed as scratch space for this layer
   // type, same as for LSTM -- see nn_train()'s LAYER_TYPE_GRU handling in nn.c).
   float **gru_gate_grad;
+  // Which optimizer nn_train() uses to turn a gradient into a weight/bias
+  // update -- see nn_optimizer_t and nn_set_optimizer(). Defaults to
+  // NN_OPTIMIZER_SGD (nn_init()'s zero-value default), matching this
+  // library's original behavior exactly with zero extra memory. Never set
+  // this directly -- use nn_set_optimizer(), which also (re)allocates the
+  // four moment buffers below to match.
+  nn_optimizer_t optimizer;
+  // Hyperparameters for the optimizer above, set by nn_set_optimizer():
+  // `optimizer_momentum` is the velocity decay for NN_OPTIMIZER_MOMENTUM,
+  // and Adam's "beta1" for NN_OPTIMIZER_ADAM (the same underlying idea --
+  // an exponential moving average of the gradient -- so one field serves
+  // both); `optimizer_beta2`/`optimizer_epsilon` are Adam-only. Unused, and
+  // left at whatever nn_set_optimizer() last wrote, while optimizer ==
+  // NN_OPTIMIZER_SGD.
+  float optimizer_momentum;
+  float optimizer_beta2;
+  float optimizer_epsilon;
+  // Adam's step counter (t in the usual Adam bias-correction formulas),
+  // incremented once per nn_train() call -- shared across every layer's
+  // Adam update within that call, not per-weight. Reset to 0 by
+  // nn_set_optimizer() (including switching back to the same optimizer),
+  // so a fresh Adam run always gets its own proper warmup. Unused for
+  // SGD/MOMENTUM.
+  uint32_t adam_step;
+  // Per mutable (non-quantized) layer with weights (FC/OUTPUT/CNN/RNN/LSTM/
+  // GRU -- NULL for POOL/DROPOUT/INPUT, same layers weight_adj skips): the
+  // optimizer's persistent per-weight state, exactly the same shape as
+  // weight[layer] (rows*row_len via quantized_layer_shape()). weight_moment1
+  // is NN_OPTIMIZER_MOMENTUM's velocity, or NN_OPTIMIZER_ADAM's first
+  // moment (m); weight_moment2 is NN_OPTIMIZER_ADAM's second moment (v)
+  // only. Both NULL under NN_OPTIMIZER_SGD -- that's the whole point of
+  // making the optimizer selectable: a model that never opts into MOMENTUM/
+  // ADAM carries none of this extra RAM. Like weight_adj, this state is
+  // never written to a saved model file (see nn_save_model_ascii()/
+  // nn_save_model_binary()) -- reloading a saved model always restarts the
+  // optimizer's accumulators from zero, and quantizing a model
+  // (nn_quantize()) always frees them (a quantized model can't train
+  // anyway; nn_dequantize() reallocates fresh, zeroed ones if `optimizer`
+  // still calls for them). nn_remove_neuron() resets (does not attempt to
+  // migrate) the two affected layers' accumulators to zero rather than
+  // trying to preserve per-weight history across a reshape.
+  float **weight_moment1;
+  float **weight_moment2;
+  // Same as weight_moment1/weight_moment2 above, but sized to bias_count
+  // (one entry per bias, via quantized_layer_shape()) instead of a full
+  // weight row -- the bias-side counterpart nn_train()'s bias-update loop
+  // reads/writes instead of nn->bias_adj (biases have no separate "adj"
+  // scratch array the way weights do; the gradient is applied directly).
+  float **bias_moment1;
+  float **bias_moment2;
   // True only for a model returned by nn_load_model_inplace(): weight,
   // weight_quantized, weight_scale, and bias/bias_quantized then point
   // directly into the caller's (read-only, e.g. flash-resident) buffer
@@ -391,5 +449,21 @@ nn_error_t nn_dequantize(nn_t *nn);
 // the always-owned neuron[]/lstm_cell[] buffers, never the aliased
 // weight/bias arrays.
 void nn_reset_state(nn_t *nn);
+// Selects the optimizer nn_train() uses from here on, and (re)allocates
+// every existing layer's weight_moment1/weight_moment2/bias_moment1/
+// bias_moment2 to match it (freeing whichever this optimizer doesn't need,
+// zeroing whichever it does) -- see nn_t's optimizer/weight_moment1/etc.
+// comments for the full explanation and memory cost of each choice (SGD:
+// none; MOMENTUM: +1 float per weight/bias; ADAM: +2 floats per weight/
+// bias). Also resets adam_step to 0, so switching optimizers (even back to
+// the same one) always starts any new Adam run with a fresh warmup rather
+// than picking up a stale step count. `momentum` is the velocity decay for
+// MOMENTUM, or Adam's beta1 for ADAM (typical: 0.9); `beta2`/`epsilon` are
+// ADAM-only (typical: 0.999/1e-8) and ignored otherwise -- pass 0 for both
+// when selecting SGD or MOMENTUM. Call this once, before training (or
+// again later to switch), not inside a per-sample training loop. Refuses
+// (NN_ERROR_READ_ONLY_MODEL) on an immutable (nn_load_model_inplace())
+// model, same as nn_train() itself -- there is nothing to train there.
+nn_error_t nn_set_optimizer(nn_t *nn, nn_optimizer_t optimizer, float momentum, float beta2, float epsilon);
 
 #endif /* NN_H */

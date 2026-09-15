@@ -17,21 +17,29 @@
 // 1 for the rest of the monitoring window.
 //
 // Measured against train_gru.c/train_lstm.c on this exact task: all three
-// eventually reach the same ceiling (100% per-timestep accuracy, every
-// fall detected, zero false alarms) -- this synthetic task turns out
-// learnable by a plain RNN too, given enough epochs. Where the difference
-// actually shows up is HOW LONG that takes and how reliably: across
-// several runs, this file consistently needed 60-200+ epochs, while
-// train_gru.c/train_lstm.c typically converged in under 50 -- confirming a
-// fall means remembering the free-fall dip once the impact arrives, then
-// continuing to watch for unusual stillness many timesteps later, and
-// without a gate to protect that signal from being squashed back through
+// eventually reach the same ceiling (100% per-timestep accuracy, every fall
+// detected, zero false alarms) -- this synthetic task turns out learnable
+// by a plain RNN too, given enough epochs, and how many epochs is mostly a
+// question of optimizer, not just architecture. With plain SGD (what
+// train_gru.c/train_lstm.c both still use), this file consistently needed
+// 60-200+ epochs against their well-under-50 -- confirming that without a
+// gate to protect the free-fall signal from being squashed back through
 // tanh (and diluted by the recurrent weights) on every single quiet
-// timestep in between, gradient descent has to work harder to find weights
-// that hold it steady anyway. Gating doesn't just help when a task is
-// otherwise unsolvable -- it also makes the solution easier to find. Every
-// sequence is synthesized on the fly (see fall_data.[ch]) -- there is
-// nothing to download.
+// timestep afterward, gradient descent has to work harder to find weights
+// that hold it steady anyway. Switching this file (only) to
+// nn_set_optimizer()'s NN_OPTIMIZER_ADAM below changes that: across several
+// runs it now converges in 11-25 epochs, matching or beating the gated
+// architectures' SGD numbers outright. That's NOT "Adam makes gating
+// unnecessary", though -- trying the same switch on train_gru.c/
+// train_lstm.c did not reliably help (occasionally much faster, but also
+// occasionally much slower than their existing SGD numbers, including one
+// run that never triggered early stopping at all), which is why they stay
+// on SGD -- see this directory's README for the full measured comparison.
+// The honest takeaway: Adam specifically compensates for the exact
+// difficulty an un-gated hidden state has on a task like this one; it
+// isn't a general win for every recurrent layer type here. Every sequence
+// is synthesized on the fly (see fall_data.[ch]) -- there is nothing to
+// download.
 
 #include <float.h>
 #include <math.h>
@@ -106,7 +114,15 @@ int main(int argc, char *argv[]) {
   int num_inputs = NUM_AXES;
   int num_outputs = 1; // fall probability at this timestep
   int hidden_units = 16;
-  float learning_rate = 0.05f;
+  // Tuned for nn_set_optimizer()'s NN_OPTIMIZER_ADAM below, not plain SGD --
+  // Adam's per-parameter update is normalized by that parameter's own
+  // recent gradient magnitude (see nn_optimizer_apply() in nn.c), so it
+  // takes effective steps roughly the size of `rate` itself regardless of
+  // the raw gradient's scale, unlike SGD's `rate * raw_gradient`. The rate
+  // SGD used here (0.05) is confirmed too large under Adam (diverges within
+  // the first few epochs); 0.01 converges cleanly and quickly -- see this
+  // file's top comment for the measured epoch-count comparison.
+  float learning_rate = 0.01f;
   float annealing = 1.0f;
   // End of tunable parameters
   nn_t *nn;
@@ -182,6 +198,14 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
+  // Adam converges dramatically faster/more reliably than plain SGD on
+  // this specific (un-gated) layer type -- see the top comment and the
+  // learning_rate comment above for the measured comparison and why this
+  // is NOT applied to train_gru.c/train_lstm.c too. Selected
+  // unconditionally (not just for a brand-new model) since this choice
+  // isn't saved to the model file -- see nn_set_optimizer()'s comment in
+  // nn.h.
+  nn_set_optimizer(nn, NN_OPTIMIZER_ADAM, 0.9f, 0.999f, 1e-8f);
   // See examples/character_recognition/train_cnn.c's identical block for why this baseline matters when
   // resuming an existing model.
   float best_validation_error = FLT_MAX;

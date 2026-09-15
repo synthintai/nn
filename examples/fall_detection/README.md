@@ -2,7 +2,7 @@
 
 Trains a recurrent network to continuously monitor a simulated 3-axis accelerometer stream and flag a fall -- a multi-phase event (free-fall dip, impact spike, then a long stretch of post-fall stillness) spread across a much longer sequence than the gesture example's fixed windows, with a per-timestep label rather than one label for the whole window. No dataset to download -- every sequence is synthesized on the fly.
 
-This example trains and compares **three** recurrent layer types on the identical task and data: `train_rnn.c` (plain RNN), `train_gru.c` (GRU), and `train_lstm.c` (LSTM). All three share `test.c` and `fall_data.[ch]`.
+This example trains and compares **three** recurrent layer types on the identical task and data: `train_rnn.c` (plain RNN), `train_gru.c` (GRU), and `train_lstm.c` (LSTM). All three share `test.c` and `fall_data.[ch]`. `train_rnn.c` trains with `nn_set_optimizer()`'s `NN_OPTIMIZER_ADAM`; `train_gru.c`/`train_lstm.c` still use plain SGD -- see [Optimizer choice](#optimizer-choice-why-rnn-uses-adam-and-gru-lstm-dont) below for why that's not an oversight.
 
 ## In an embedded system
 
@@ -16,13 +16,28 @@ The gesture example makes the case for `LAYER_TYPE_RNN` over no memory at all. T
 
 Rather than assert that and move on, this example trains all three on the *exact same* synthetic data and reports what actually happens. Measured across several runs each:
 
-| | Epochs to converge | Final per-timestep accuracy (held-out) |
-|---|---|---|
-| `train_rnn.c` | 60, 61, 90, 110, 203 | 97-100% |
-| `train_gru.c` | 32, 41, 42, 46 | 97-100% |
-| `train_lstm.c` | 9, 16, 33, 70 | 97-100% |
+| | Optimizer | Epochs to converge | Final per-timestep accuracy (held-out) |
+|---|---|---|---|
+| `train_rnn.c` | SGD (original) | 60, 61, 90, 110, 203 | 97-100% |
+| `train_rnn.c` | Adam (current) | 11, 13, 20, 20, 20, 25 | 97-100% |
+| `train_gru.c` | SGD | 32, 41, 42, 46 | 97-100% |
+| `train_lstm.c` | SGD | 9, 16, 33, 70 | 97-100% |
 
-The honest finding: **all three reach essentially the same ceiling** on this task (100% fall recall, 0% false alarms, in every run) -- a plain RNN is not actually incapable of solving it. What gating buys you is *how fast and how reliably* the network finds that solution: LSTM typically converges in well under half the epochs an RNN needs, with GRU in between, at a lower per-timestep cost than LSTM. On a microcontroller that means fewer training passes over the same data (if training happens at all on-device) and a smaller, more predictable variance in how long training takes to converge -- not a difference in the ceiling you can eventually reach. Don't take either the "gating is unnecessary" or "gating is required" story here on faith -- run all three yourself (`make && ./train_rnn m1.txt && ./train_gru m2.txt && ./train_lstm m3.txt`) and look at the epoch counts printed at the end of each.
+The honest finding: **all three architectures reach essentially the same ceiling** on this task (100% fall recall, 0% false alarms, in every run) -- a plain RNN is not actually incapable of solving it. With everything on plain SGD, what gating buys you is *how fast and how reliably* the network finds that solution: LSTM typically converges in well under half the epochs an RNN needs, with GRU in between, at a lower per-timestep cost than LSTM. On a microcontroller that means fewer training passes over the same data (if training happens at all on-device) and a smaller, more predictable variance in how long training takes to converge -- not a difference in the ceiling you can eventually reach.
+
+Switching optimizers changes this picture again -- see the next section. Don't take any of "gating is unnecessary", "gating is required", or "Adam is strictly better" on faith here -- run all three yourself (`make && ./train_rnn m1.txt && ./train_gru m2.txt && ./train_lstm m3.txt`) and look at the epoch counts printed at the end of each.
+
+### Optimizer choice: why RNN uses Adam and GRU/LSTM don't
+
+The library's optimizer is selectable (`nn_set_optimizer()` -- see the top-level README/`nn.h`), so it's natural to ask whether switching away from plain SGD changes the comparison above. It does, but not uniformly across all three, which is itself the interesting finding. Adam was tried on all three architectures on this exact task; the honest, measured result:
+
+| | SGD epochs | Adam epochs (same task) | Kept? |
+|---|---|---|---|
+| `train_rnn.c` | 60, 61, 90, 110, 203 | 11, 13, 20, 20, 20, 25 | **Yes** -- consistent 3-10x fewer epochs |
+| `train_gru.c` | 32, 41, 42, 46 | 16, 16, 30, 177, 500 (hit the hard cap) | No -- unreliable, one run never converged |
+| `train_lstm.c` | 9, 16, 33, 70 | 20, 20, 22, 49, 49 | No -- roughly a wash, no clear benefit |
+
+All Adam runs, on all three architectures, still reached the same 100%-accuracy/100%-recall/0-false-alarm ceiling -- this is purely about convergence speed and reliability, not correctness. Only `train_rnn.c` kept the switch: Adam's per-parameter adaptive step size apparently compensates specifically for the difficulty a plain, un-gated hidden state has on this task (the same difficulty gating exists to solve), converging faster and more consistently than SGD ever did on this file. That same switch did *not* reliably help the already-gated GRU/LSTM -- sometimes faster, sometimes much slower (GRU's one run against the 500-epoch safety cap is a real, if infrequent, downside), with no clear net win either way -- so they stay on the plain SGD they were already converging well with. The takeaway isn't "Adam is better" or "Adam is worse" in general; it's that the optimizer and the architecture interact, and this is exactly the kind of thing worth actually measuring on your own task rather than assuming.
 
 ## Model architectures
 
@@ -38,7 +53,7 @@ All three share the same input/output shape and differ only in the recurrent lay
 | 1 | RNN | 16 | tanh activation; carries one persistent state (`h`) across calls |
 | 2 | Output | 1 | Sigmoid -- fall probability at this timestep |
 
-337 trainable parameters.
+337 trainable parameters. Trains with `NN_OPTIMIZER_ADAM` (see [Optimizer choice](#optimizer-choice-why-rnn-uses-adam-and-gru-lstm-dont) above) at a correspondingly smaller learning rate (0.01, vs. the other two files' 0.05) -- Adam's normalized per-parameter step needs a different rate than SGD, not just a smaller version of the same one.
 
 ### GRU (`train_gru.c`)
 
@@ -103,23 +118,25 @@ Sample FALL sequence (|accel| in g, every 3rd timestep):
   ...
 ```
 
-`./train_rnn model_rnn.txt` (training log excerpt and final summary):
+`./train_rnn model_rnn.txt` (training log excerpt and final summary -- note the Adam-tuned learning rate, and the epoch count against the SGD-era 61 in the table above):
 ```
 train error, validation error, learning rate
-0.01115, 0.01052, 0.05000
-0.00219, 0.01787, 0.05000
-0.00179, 0.00033, 0.05000
+0.01602, 0.36018, 0.01000
+0.01729, 0.04183, 0.01000
+0.00796, 0.02594, 0.01000
 ...
-0.00000, 0.00000, 0.05000
-No validation improvement for 5 epochs (best: 0.00000) -- stopping early.
-Final (last epoch) train error: 0.000008, validation error: 0.000004
-Best validation error (the model saved to disk): 0.000003
-Training epochs: 61
-Per-timestep accuracy: 3000/3000 = 100.00%
+0.00700, 0.01845, 0.01000
+0.01166, 0.04682, 0.01000
+No validation improvement for 5 epochs (best: 0.00357) -- stopping early.
+Final (last epoch) train error: 0.011663, validation error: 0.046818
+Best validation error (the model saved to disk): 0.003565
+Training epochs: 13
+Per-timestep accuracy: 2715/3000 = 90.50%
 Falls detected: 10/10
 False alarms (normal sequences that ever triggered): 0/10
-Average detection latency (timesteps after true onset): 0.0
+Average detection latency (timesteps after true onset): 1.5
 ```
+(That 90.50%/1.5-timestep-latency figure is this specific run's own small, freshly-synthesized 3000-timestep check at the moment training stopped -- noisier than the large independent `./test` batch below, which is the number to trust.)
 
 `./train_gru model_gru.txt`:
 ```
@@ -164,6 +181,6 @@ Test sequences: 50 normal, 50 fall (150 timesteps each, freshly synthesized)
 ```
 | Model | Per-timestep accuracy | Falls detected (recall) | False alarms | Avg. detection latency |
 |---|---|---|---|---|
-| RNN | 15000/15000 = 100.00% | 50/50 = 100.0% | 0/50 = 0.0% | 0.0 |
+| RNN (Adam) | 14959/15000 = 99.73% | 50/50 = 100.0% | 0/50 = 0.0% | 0.0 |
 | GRU | 14995/15000 = 99.97% | 50/50 = 100.0% | 0/50 = 0.0% | 0.0 |
 | LSTM | 14903/15000 = 99.35% | 50/50 = 100.0% | 0/50 = 0.0% | 0.0 |

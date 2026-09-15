@@ -18,7 +18,7 @@ The repository root holds the library itself and a set of general-purpose model 
 
 3. `prune.c` - Removes least contributing neurons from a network to reduce model size and improve performance.
 
-4. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
+4. `quantize.c` - Converts a floating-point model to a 8-bit integer model. By itself this only shrinks the model's on-disk/flash footprint -- every weight is stored as `int8_t`, but `nn_predict()`/`nn_train()`/`nn_error()` still multiply each one against a full-precision float activation, so every multiply-accumulate still needs an FPU. Calling `nn_set_int8_inference(nn, true)` on a quantized model additionally quantizes each layer's input activation(s) to int8 at inference time (a fresh, symmetric scale computed from that call's own activation values -- no calibration dataset needed) and accumulates the dot product as int32, rescaling to float only once per output neuron instead of once per weight -- the dominant cost in the loop becomes pure integer arithmetic. It's opt-in (default off) because quantizing activations too adds a small amount of rounding error beyond int8-weight-only quantization; see `nn->int8_inference`'s comment in nn.h for the full explanation, and `nn_set_int8_inference()`'s comment for usage notes (call it once, after the model's final layer has been added, not inside a per-timestep inference loop).
 
 5. `dequantize.c` - Converts an 8-bit integer model into a floating point model.
 

@@ -600,6 +600,140 @@ static void nn_gru_backward(nn_t *nn, int layer, const float *dh)
 // caches the per-neuron scale used in nn->dropout_scale for the backward
 // pass; false (from nn_predict()/nn_error()) makes every DROPOUT layer a
 // pure pass-through, as is standard at inference.
+// Returns how many int8_t elements a single forward_propagation() call for
+// `layer` needs from nn->act_quantized when int8_inference is enabled: the
+// previous layer's full activation vector (width[layer-1]) for FC/OUTPUT/CNN,
+// or that plus this layer's own hidden state (width[layer-1]+width[layer])
+// for RNN/LSTM/GRU, whose weight rows span both (see quantized_layer_shape()).
+// POOL/DROPOUT/INPUT have no weights, hence nothing to quantize: 0.
+static int nn_act_scratch_needed(nn_t *nn, int layer)
+{
+  switch ((layer_type_t)nn->layer_type[layer]) {
+    case LAYER_TYPE_RNN:
+    case LAYER_TYPE_LSTM:
+    case LAYER_TYPE_GRU:
+      return (int)nn->width[layer - 1] + (int)nn->width[layer];
+    case LAYER_TYPE_FC:
+    case LAYER_TYPE_OUTPUT:
+    case LAYER_TYPE_CNN:
+      return (int)nn->width[layer - 1];
+    default:
+      return 0;
+  }
+}
+
+// Grows (never shrinks) nn->act_quantized to cover every current layer's
+// nn_act_scratch_needed(), so forward_propagation() can always assume it's
+// big enough and never has to allocate on the hot inference path itself.
+// Called from nn_set_int8_inference() (to size it when first enabled) and
+// from nn_add_layer() (to keep it sized if int8_inference is already on and
+// a newly added layer needs more room). Returns false only on a real
+// allocation failure, leaving the existing buffer/capacity untouched.
+static bool nn_ensure_act_scratch(nn_t *nn)
+{
+  int max_needed = 0;
+  for (int layer = 1; layer < (int)nn->depth; layer++) {
+    int needed = nn_act_scratch_needed(nn, layer);
+    if (needed > max_needed)
+      max_needed = needed;
+  }
+  if ((size_t)max_needed <= nn->act_quantized_cap)
+    return true;
+  int8_t *grown = (int8_t *)realloc(nn->act_quantized, (size_t)max_needed);
+  if (!grown)
+    return false;
+  nn->act_quantized = grown;
+  nn->act_quantized_cap = (size_t)max_needed;
+  return true;
+}
+
+// Quantizes `len` float activations from `src` into `dst` as symmetric int8
+// (range [-127, 127], zero point 0), using a fresh scale computed from this
+// call's own max-abs value -- the activation-side counterpart of the
+// per-neuron weight_scale nn_quantize() already derives from actual weight
+// values, just computed fresh every call instead of once up front, since
+// (unlike weights) activations vary every call and there's no calibration
+// dataset to derive a fixed scale from in advance. All-zero input yields
+// scale 0 and an all-zero dst, so a downstream dot product correctly comes
+// out to 0 rather than dividing by zero.
+static float nn_quantize_activations(const float *src, int len, int8_t *dst)
+{
+  float maxabs = 0.0f;
+  for (int k = 0; k < len; k++) {
+    float a = fabsf(src[k]);
+    if (a > maxabs)
+      maxabs = a;
+  }
+  if (maxabs == 0.0f) {
+    memset(dst, 0, (size_t)len);
+    return 0.0f;
+  }
+  float scale = maxabs / 127.0f;
+  float inv_scale = 1.0f / scale;
+  for (int k = 0; k < len; k++) {
+    int q = (int)lroundf(src[k] * inv_scale);
+    if (q > 127) q = 127;
+    if (q < -127) q = -127;
+    dst[k] = (int8_t)q;
+  }
+  return scale;
+}
+
+// Like nn_quantize_activations(), but for RNN/LSTM/GRU: quantizes two source
+// vectors (this layer's external input, then its own previous hidden state)
+// back-to-back into one contiguous dst, sharing a SINGLE scale derived from
+// both vectors' combined max-abs -- so the resulting int8 buffer lines up
+// directly with a weight row's [input columns | recurrent columns] layout
+// (see quantized_layer_shape()) and every neuron's dot product still needs
+// only one rescale multiply, exactly as nn_quantize_activations() does.
+static float nn_quantize_activations2(const float *src1, int len1, const float *src2, int len2, int8_t *dst)
+{
+  float maxabs = 0.0f;
+  for (int k = 0; k < len1; k++) {
+    float a = fabsf(src1[k]);
+    if (a > maxabs)
+      maxabs = a;
+  }
+  for (int k = 0; k < len2; k++) {
+    float a = fabsf(src2[k]);
+    if (a > maxabs)
+      maxabs = a;
+  }
+  if (maxabs == 0.0f) {
+    memset(dst, 0, (size_t)(len1 + len2));
+    return 0.0f;
+  }
+  float scale = maxabs / 127.0f;
+  float inv_scale = 1.0f / scale;
+  for (int k = 0; k < len1; k++) {
+    int q = (int)lroundf(src1[k] * inv_scale);
+    if (q > 127) q = 127;
+    if (q < -127) q = -127;
+    dst[k] = (int8_t)q;
+  }
+  for (int k = 0; k < len2; k++) {
+    int q = (int)lroundf(src2[k] * inv_scale);
+    if (q > 127) q = 127;
+    if (q < -127) q = -127;
+    dst[len1 + k] = (int8_t)q;
+  }
+  return scale;
+}
+
+void nn_set_int8_inference(nn_t *nn, bool enable)
+{
+  if (!nn)
+    return;
+  if (enable) {
+    if (!nn_ensure_act_scratch(nn)) {
+      fprintf(stderr, "nn_set_int8_inference: failed to allocate the activation-quantization scratch buffer -- leaving int8 inference disabled\n");
+      nn->int8_inference = false;
+      return;
+    }
+  }
+  nn->int8_inference = enable;
+}
+
 static void forward_propagation(nn_t *nn, bool training)
 {
   float sum;
@@ -624,7 +758,23 @@ static void forward_propagation(nn_t *nn, bool training)
           // softmax (unlike every other activation) needs every neuron's
           // preact already computed before it can normalize any one of
           // them -- see the comment on ACTIVATION_FUNCTION_TYPE_SOFTMAX in nn.h.
-          if (nn->quantized) {
+          if (nn->quantized && nn->int8_inference) {
+            // Fully-integer path: this layer's whole input activation
+            // vector is quantized to int8 ONCE (not per neuron), then every
+            // neuron's dot product accumulates as int32 -- see
+            // nn_quantize_activations()'s comment. Only the final rescale
+            // (once per neuron, not once per weight) is a float op.
+            float act_scale = nn_quantize_activations(nn->neuron[i - 1], row_len, nn->act_quantized);
+            for (j = 0; j < width_i; j++) {
+              int32_t isum = 0;
+              const int8_t *wrow = nn->weight_quantized[i] + j * row_len;
+              const int8_t *arow = nn->act_quantized;
+              for (k = 0; k < row_len; k++) {
+                isum += (int32_t)arow[k] * (int32_t)wrow[k];
+              }
+              nn->preact[i][j] = (float)isum * act_scale * nn->weight_scale[i][j] + (float)nn->bias_quantized[i][j] * nn->bias_scale[i];
+            }
+          } else if (nn->quantized) {
             for (j = 0; j < width_i; j++) {
               sum = 0.0f;
               const int8_t *wrow = nn->weight_quantized[i] + j * row_len;
@@ -707,7 +857,21 @@ static void forward_propagation(nn_t *nn, bool training)
           const int row_len = row_len_in + hidden;        // total flat row length (see quantized_layer_shape())
           float *prev = nn->rnn_hidden_prev[i];
           memcpy(prev, nn->neuron[i], (size_t)hidden * sizeof(float));
-          if (nn->quantized) {
+          if (nn->quantized && nn->int8_inference) {
+            // Fully-integer path: quantize [external input | previous
+            // hidden state] into ONE contiguous int8 buffer sharing a
+            // single scale (see nn_quantize_activations2()'s comment), then
+            // accumulate the whole row (both halves) as one int32 dot
+            // product per neuron -- the row layout already matches.
+            float act_scale = nn_quantize_activations2(nn->neuron[i - 1], row_len_in, prev, hidden, nn->act_quantized);
+            for (j = 0; j < hidden; j++) {
+              int32_t isum = 0;
+              const int8_t *wrow = nn->weight_quantized[i] + j * row_len;
+              for (k = 0; k < row_len; k++)
+                isum += (int32_t)nn->act_quantized[k] * (int32_t)wrow[k];
+              nn->preact[i][j] = (float)isum * act_scale * nn->weight_scale[i][j] + (float)nn->bias_quantized[i][j] * nn->bias_scale[i];
+            }
+          } else if (nn->quantized) {
             for (j = 0; j < hidden; j++) {
               sum = 0.0f;
               const int8_t *wrow = nn->weight_quantized[i] + j * row_len;
@@ -776,7 +940,41 @@ static void forward_propagation(nn_t *nn, bool training)
           // The quantized/float branch is hoisted out per-layer (not
           // per-gate/per-weight), same rationale as the FC/OUTPUT and RNN
           // cases above.
-          if (nn->quantized) {
+          if (nn->quantized && nn->int8_inference) {
+            // Fully-integer path: same quantize-once-per-timestep strategy
+            // as LAYER_TYPE_RNN above, shared across all four gates (they
+            // all read the same [input | previous hidden] row, just against
+            // different weight rows), so the two float dot-product loops
+            // below collapse into one int32 accumulate per gate.
+            float act_scale = nn_quantize_activations2(nn->neuron[i - 1], row_len_in, h_prev, hidden, nn->act_quantized);
+            for (j = 0; j < hidden; j++) {
+              int32_t si = 0, sf = 0, sg = 0, so = 0;
+              const int8_t *w_i = nn->weight_quantized[i] + (0 * hidden + j) * row_len;
+              const int8_t *w_f = nn->weight_quantized[i] + (1 * hidden + j) * row_len;
+              const int8_t *w_g = nn->weight_quantized[i] + (2 * hidden + j) * row_len;
+              const int8_t *w_o = nn->weight_quantized[i] + (3 * hidden + j) * row_len;
+              for (k = 0; k < row_len; k++) {
+                int32_t a = nn->act_quantized[k];
+                si += a * (int32_t)w_i[k];
+                sf += a * (int32_t)w_f[k];
+                sg += a * (int32_t)w_g[k];
+                so += a * (int32_t)w_o[k];
+              }
+              float pre_i = (float)si * act_scale * nn->weight_scale[i][0 * hidden + j] + (float)nn->bias_quantized[i][0 * hidden + j] * nn->bias_scale[i];
+              float pre_f = (float)sf * act_scale * nn->weight_scale[i][1 * hidden + j] + (float)nn->bias_quantized[i][1 * hidden + j] * nn->bias_scale[i];
+              float pre_g = (float)sg * act_scale * nn->weight_scale[i][2 * hidden + j] + (float)nn->bias_quantized[i][2 * hidden + j] * nn->bias_scale[i];
+              float pre_o = (float)so * act_scale * nn->weight_scale[i][3 * hidden + j] + (float)nn->bias_quantized[i][3 * hidden + j] * nn->bias_scale[i];
+              gate_i[j] = activation_function_sigmoid(pre_i, false);
+              gate_f[j] = activation_function_sigmoid(pre_f, false);
+              gate_g[j] = activation_function_tanh(pre_g, false);
+              gate_o[j] = activation_function_sigmoid(pre_o, false);
+              float c_new = gate_f[j] * c_prev[j] + gate_i[j] * gate_g[j];
+              nn->lstm_cell[i][j] = c_new;
+              tanh_c[j] = activation_function_tanh(c_new, false);
+              nn->neuron[i][j] = gate_o[j] * tanh_c[j];
+              nn->preact[i][j] = nn->neuron[i][j]; // no single "preact" applies here -- mirrored for consistency only, never read for this layer type
+            }
+          } else if (nn->quantized) {
             for (j = 0; j < hidden; j++) {
               float pre_i = 0.0f, pre_f = 0.0f, pre_g = 0.0f, pre_o = 0.0f;
               const int8_t *w_i = nn->weight_quantized[i] + (0 * hidden + j) * row_len;
@@ -890,7 +1088,45 @@ static void forward_propagation(nn_t *nn, bool training)
           // The quantized/float branch is hoisted out per-layer (not
           // per-gate/per-weight), same rationale as the FC/OUTPUT, RNN, and
           // LSTM cases above.
-          if (nn->quantized) {
+          if (nn->quantized && nn->int8_inference) {
+            // Fully-integer path: same quantize-once-per-timestep strategy
+            // as LSTM above. The candidate gate's recurrent contribution
+            // (n_recur) still has to stay a SEPARATE accumulator from its
+            // input contribution -- it needs the reset gate applied before
+            // joining pre_n, exactly as in the float path below -- so it
+            // gets its own int32 accumulator (isum_n_h), rescaled by the
+            // same act_scale/weight_scale as the candidate's input half.
+            float act_scale = nn_quantize_activations2(nn->neuron[i - 1], row_len_in, h_prev, hidden, nn->act_quantized);
+            for (j = 0; j < hidden; j++) {
+              int32_t isum_r = 0, isum_z = 0, isum_n_x = 0, isum_n_h = 0;
+              const int8_t *w_r = nn->weight_quantized[i] + (0 * hidden + j) * row_len;
+              const int8_t *w_z = nn->weight_quantized[i] + (1 * hidden + j) * row_len;
+              const int8_t *w_n = nn->weight_quantized[i] + (2 * hidden + j) * row_len;
+              for (k = 0; k < row_len_in; k++) {
+                int32_t a = nn->act_quantized[k];
+                isum_r += a * (int32_t)w_r[k];
+                isum_z += a * (int32_t)w_z[k];
+                isum_n_x += a * (int32_t)w_n[k];
+              }
+              for (k = 0; k < hidden; k++) {
+                int32_t a = nn->act_quantized[row_len_in + k];
+                isum_r += a * (int32_t)w_r[row_len_in + k];
+                isum_z += a * (int32_t)w_z[row_len_in + k];
+                isum_n_h += a * (int32_t)w_n[row_len_in + k];
+              }
+              float pre_r = (float)isum_r * act_scale * nn->weight_scale[i][0 * hidden + j] + (float)nn->bias_quantized[i][0 * hidden + j] * nn->bias_scale[i];
+              float pre_z = (float)isum_z * act_scale * nn->weight_scale[i][1 * hidden + j] + (float)nn->bias_quantized[i][1 * hidden + j] * nn->bias_scale[i];
+              float n_recur = (float)isum_n_h * act_scale * nn->weight_scale[i][2 * hidden + j];
+              gate_r[j] = activation_function_sigmoid(pre_r, false);
+              gate_z[j] = activation_function_sigmoid(pre_z, false);
+              n_recur_raw[j] = n_recur;
+              float pre_n = (float)isum_n_x * act_scale * nn->weight_scale[i][2 * hidden + j] + gate_r[j] * n_recur + (float)nn->bias_quantized[i][2 * hidden + j] * nn->bias_scale[i];
+              gate_n[j] = activation_function_tanh(pre_n, false);
+              float h_new = (1.0f - gate_z[j]) * h_prev[j] + gate_z[j] * gate_n[j];
+              nn->neuron[i][j] = h_new;
+              nn->preact[i][j] = h_new; // no single "preact" applies here -- mirrored for consistency only, never read for this layer type
+            }
+          } else if (nn->quantized) {
             for (j = 0; j < hidden; j++) {
               float pre_r = 0.0f, pre_z = 0.0f, pre_n = 0.0f, n_recur = 0.0f;
               const int8_t *w_r = nn->weight_quantized[i] + (0 * hidden + j) * row_len;
@@ -1016,6 +1252,9 @@ nn_t *nn_init(void)
   nn->lstm_gate_grad = NULL;
   nn->gru_cache = NULL;
   nn->gru_gate_grad = NULL;
+  nn->int8_inference = false;
+  nn->act_quantized = NULL;
+  nn->act_quantized_cap = 0;
   nn->immutable = false;
   return nn;
 }
@@ -1142,6 +1381,11 @@ void nn_free(nn_t *nn)
       free(nn->gru_gate_grad[layer]);
     free(nn->gru_gate_grad);
   }
+  // Free the int8_inference activation-quantization scratch buffer
+  // (independent of quantized state, same as pool_argmax/etc. above -- and
+  // never aliased into an immutable model's buffer, since it's always our
+  // own scratch, not part of the loaded/aliased model data).
+  free(nn->act_quantized);
   free(nn);
 }
 
@@ -1460,6 +1704,14 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
           return NN_ERROR_OUT_OF_MEMORY;
       }
     }
+  }
+  // If int8_inference was already enabled (nn_set_int8_inference() called
+  // before this layer was added), make sure act_quantized is still big
+  // enough for it -- see nn_ensure_act_scratch()'s comment. This only runs
+  // at model-construction time, never inside the hot inference path.
+  if (nn->int8_inference && !nn_ensure_act_scratch(nn)) {
+    fprintf(stderr, "nn_add_layer: failed to grow the int8-inference scratch buffer for the new layer -- disabling int8 inference\n");
+    nn->int8_inference = false;
   }
   return NN_ERROR_NONE;
 }
@@ -3624,7 +3876,52 @@ void nn_conv2d(nn_t *nn, int layer)
     // simply skipped rather than read. With padding == 0 this range is
     // always the full [0, kernel_size), so the loop bodies below are
     // identical to the pre-padding behavior in that case.
-    if (nn->quantized) {
+    if (nn->quantized && nn->int8_inference) {
+        // Fully-integer path: the entire previous layer's activation tensor
+        // (every input channel's plane) is quantized to int8 ONCE per layer
+        // call, with a single scale shared across the whole tensor (matching
+        // common practice -- per-channel scale for weights, per-tensor scale
+        // for activations); the same [layer-1] indexing the float path uses
+        // still applies, just against the quantized int8 copy instead. Each
+        // input channel's kernel-window taps then accumulate as int32,
+        // rescaled once per (oc, ic) pair by weight_scale (as the float path
+        // already does) with one extra shared act_scale factor pulled out
+        // after the ic loop instead of applied per tap.
+        float act_scale = nn_quantize_activations(nn->neuron[layer - 1], (int)nn->width[layer - 1], nn->act_quantized);
+        for (int oc = 0; oc < out_c; ++oc) {
+            const float bias = (float)nn->bias_quantized[layer][oc] * nn->bias_scale[layer];
+            float *dst = nn->neuron[layer] + oc * plane_out;
+            float *pre = nn->preact[layer] + oc * plane_out;
+            for (int oy = 0; oy < y_out; ++oy) {
+                const int in_y0 = oy * cnn->stride - cnn->padding;
+                const int ky_start = in_y0 < 0 ? -in_y0 : 0;
+                const int ky_end = (in_y0 + cnn->kernel_size > cnn->in_h) ? (cnn->in_h - in_y0) : cnn->kernel_size;
+                for (int ox = 0; ox < x_out; ++ox) {
+                    const int in_x0 = ox * cnn->stride - cnn->padding;
+                    const int kx_start = in_x0 < 0 ? -in_x0 : 0;
+                    const int kx_end = (in_x0 + cnn->kernel_size > cnn->in_w) ? (cnn->in_w - in_x0) : cnn->kernel_size;
+                    float sum = 0.0f;
+                    for (int ic = 0; ic < in_c; ++ic) {
+                        const int8_t *base = nn->act_quantized + ic * cnn->in_h * cnn->in_w;
+                        const int8_t *kptr = nn->weight_quantized[layer] + (oc * in_c + ic) * row_len;
+                        const float wsc = nn->weight_scale[layer][oc * in_c + ic];
+                        int32_t iraw = 0;
+                        for (int ky = ky_start; ky < ky_end; ++ky) {
+                            const int8_t *sptr = base + (in_y0 + ky) * cnn->in_w + in_x0;
+                            const int8_t *wrow = kptr + ky * cnn->kernel_size;
+                            for (int kx = kx_start; kx < kx_end; ++kx)
+                                iraw += (int32_t)sptr[kx] * (int32_t)wrow[kx];
+                        }
+                        sum += (float)iraw * wsc;
+                    }
+                    const int oidx = oy * x_out + ox;
+                    sum = sum * act_scale + bias;
+                    pre[oidx] = sum;
+                    dst[oidx] = activation_function[nn->activation[layer]](sum, false);
+                }
+            }
+        }
+    } else if (nn->quantized) {
         for (int oc = 0; oc < out_c; ++oc) {
             const float bias = (float)nn->bias_quantized[layer][oc] * nn->bias_scale[layer];
             float *dst = nn->neuron[layer] + oc * plane_out;

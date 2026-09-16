@@ -59,3 +59,4 @@ check:
 
 clean:
 	$(RM) nn.o data_prep.o libnn.a libnn.so prune quantize dequantize summary export import tags
+	for d in examples/*/; do $(MAKE) -C "$$d" clean; done

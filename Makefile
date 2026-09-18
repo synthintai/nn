@@ -33,6 +33,26 @@ nn.o: nn.c nn.h
 data_prep.o: data_prep.c data_prep.h
 	$(CC) $(CFLAGS) -c $<
 
+# On-device-reusable audio feature extraction (framing/FFT/mel
+# filterbank/log-energy). Unlike data_prep.o above, this DOES need to ship
+# into firmware alongside nn.o: a keyword-spotting target has to run the
+# exact same feature extraction against its live mic buffer that prepared
+# its training data, or the model sees different features at inference than
+# it was trained on. Still not part of libnn.a (it isn't neural-net code)
+# or of `all` (no root tool uses it directly) -- examples/*/Makefile
+# recurses into `$(MAKE) -C ../.. audio_features.o` for whichever example
+# needs it (currently just wake_word_detection).
+audio_features.o: audio_features.c audio_features.h
+	$(CC) $(CFLAGS) -c $<
+
+# Desktop-only 16-bit PCM mono WAV decoder -- same category as data_prep.o
+# above (format-agnostic, no dataset-specific logic), but, like data_prep.o,
+# not something an embedded target wants: firmware gets PCM straight from
+# its own mic/ADC driver, never a .wav file. Not part of libnn.a or `all`,
+# same reasoning as data_prep.o.
+wav_reader.o: wav_reader.c wav_reader.h
+	$(CC) $(CFLAGS) -c $<
+
 prune: prune.c libnn.a
 	$(CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
@@ -58,5 +78,5 @@ check:
 	cppcheck --enable=all --inconclusive .
 
 clean:
-	$(RM) nn.o data_prep.o libnn.a libnn.so prune quantize dequantize summary export import tags
+	$(RM) nn.o data_prep.o audio_features.o wav_reader.o libnn.a libnn.so prune quantize dequantize summary export import tags
 	for d in examples/*/; do $(MAKE) -C "$$d" clean; done

@@ -14,25 +14,31 @@ The repository root holds the library itself and a set of general-purpose model 
 
 1. `nn.[ch]` - The neural net library, which can be pulled directly into your embedded project. Nothing else in this repository needs to accompany it into an embedded target.
 
-2. `data_prep.[ch]` / `split.py` - General-purpose CSV data preparation: `data_prep.[ch]` reads/parses/shuffles flat input/target rows, and `split.py <input.csv> [--train FRACTION] [--validation FRACTION]` (default 0.8/0.1, remainder to test) shuffles and splits any line-oriented CSV file into train.csv/validation.csv/test.csv, with no idea what's in any given line. Unlike `gesture_data.[ch]`/`fall_data.[ch]` below (each specific to one example's own synthetic generator), neither has any domain-specific logic of its own, so they live here rather than inside `examples/character_recognition/` -- reusable by any example that wants CSV-backed training data, currently just that one. `data_prep.[ch]` isn't part of `libnn.a` (see the comment on its Makefile rule) -- both are desktop-side training-data utilities, not something an embedded target would want.
+2. `data_prep.[ch]` / `split.py` - General-purpose CSV data preparation: `data_prep.[ch]` reads/parses/shuffles flat input/target rows, and `split.py <input.csv> [--train FRACTION] [--validation FRACTION]` (default 0.8/0.1, remainder to test) shuffles and splits any line-oriented CSV file into train.csv/validation.csv/test.csv, with no idea what's in any given line. Unlike `gesture_data.[ch]`/`fall_data.[ch]` below (each specific to one example's own synthetic generator), neither has any domain-specific logic of its own, so they live here rather than inside `examples/character_recognition/` -- reusable by any example that wants CSV-backed training data. `data_prep.[ch]` isn't part of `libnn.a` (see the comment on its Makefile rule) -- both are desktop-side training-data utilities, not something an embedded target would want.
 
-3. `prune.c` - Removes least contributing neurons from a network to reduce model size and improve performance.
+3. `audio_features.[ch]` - Turns raw PCM audio into the log-mel feature frames a sequence model (`LAYER_TYPE_RNN`/`GRU`/`LSTM`) can consume one timestep at a time: framing/windowing, an FFT, a mel filterbank, and log-energy output. Unlike everything else in this list besides `nn.[ch]` itself, this one is meant to ship into firmware too -- a keyword-spotting target has to run the exact same feature extraction against its live mic buffer that prepared its training data. Allocation-free after `audio_features_init()`, so it's safe to call from a real-time mic-input path. Not part of `libnn.a` (it isn't neural-net code); used by `examples/wake_word_detection/`.
 
-4. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
+4. `wav_reader.[ch]` - Decodes a 16-bit PCM mono WAV file into a float sample buffer. Same category as `data_prep.[ch]`: general enough to live here rather than inside one example, but desktop-only (not part of `libnn.a`) since firmware gets PCM straight from its own mic/ADC driver, never a `.wav` file. Used by `examples/wake_word_detection/`.
 
-5. `dequantize.c` - Converts an 8-bit integer model into a floating point model.
+5. `prune.c` - Removes least contributing neurons from a network to reduce model size and improve performance.
 
-6. `export.c` / `import.c` - Convert a model between the ASCII, binary, and inplace file formats (see Model File Format below).
+6. `quantize.c` - Converts a floating-point model to a 8-bit integer model.
 
-7. `summary.c` - Describes a model file, including which of the three formats (ASCII, binary, or inplace) it's saved in.
+7. `dequantize.c` - Converts an 8-bit integer model into a floating point model.
 
-The three examples below share a progression worth reading in order -- see [`examples/README.md`](examples/README.md) for a one-page summary and comparison table before diving into any one of them.
+8. `export.c` / `import.c` - Convert a model between the ASCII, binary, and inplace file formats (see Model File Format below).
 
-8. [`examples/character_recognition/`](examples/character_recognition/README.md) - Recognizes handwritten digits (MNIST), with two training programs sharing the same data and evaluation: `train_cnn.c` (convolution + pooling ahead of the fully-connected layers) and `train_fc.c` (a plain fully-connected network on the same task -- the baseline a CNN is normally justified against). Both use `data_prep.[ch]`/`split.py` above (this example's `samples.csv` download rule stays local to its own Makefile, though, since -- unlike the splitting logic -- fetching *this* dataset specifically isn't reusable), and share a single architecture-agnostic `test.c`. `predict.c` demonstrates how to use either's trained model in a target application to make predictions on new data (hardcoded to this example's 28x28 MNIST-style input, unlike the format-agnostic tools above). See its [README](examples/character_recognition/README.md) for the embedded-system framing, both architectures' diagrams, and sample output.
+9. `summary.c` - Describes a model file, including which of the three formats (ASCII, binary, or inplace) it's saved in.
 
-9. [`examples/gesture_recognition/`](examples/gesture_recognition/README.md) - Trains a recurrent (RNN) neural network to classify synthetic 3-axis accelerometer "gesture" time-series (the kind of sensor stream a wearable or remote control's IMU would produce) instead of a fixed image dataset -- no data file to download; every training window is generated on the fly by `gesture_data.[ch]`, shared by `train.c` and `test.c` so neither duplicates the other's data-generation logic. `test.c` independently re-evaluates a saved model against a freshly-synthesized batch of windows (unseen by construction, since nothing about `train.c`'s data is ever persisted to disk) and reports a confusion matrix plus per-class/overall accuracy. See its [README](examples/gesture_recognition/README.md) for the embedded-system framing, architecture diagram, and sample output.
+The four examples below share a progression worth reading in order -- see [`examples/README.md`](examples/README.md) for a one-page summary and comparison table before diving into any one of them.
 
-10. [`examples/fall_detection/`](examples/fall_detection/README.md) - Trains three recurrent neural network architectures -- `train_rnn.c`, `train_gru.c`, `train_lstm.c` -- on the identical task: continuously monitoring a synthetic 3-axis accelerometer stream (generated by `fall_data.[ch]`) for a fall event, a multi-phase pattern (free-fall dip, impact spike, then a long stretch of post-fall stillness) spread across a much longer sequence than the gesture example's fixed windows, with a per-timestep (not per-window) label. All three share a single architecture-agnostic `test.c`, which independently re-evaluates a saved model against a freshly-synthesized, larger batch of monitoring sequences and reports per-timestep accuracy, recall (falls ever detected), false alarms, and average detection latency. See its [README](examples/fall_detection/README.md) for the embedded-system framing, all three architectures' diagrams, and a measured (not assumed) comparison of how quickly each converges.
+10. [`examples/character_recognition/`](examples/character_recognition/README.md) - Recognizes handwritten digits (MNIST), with two training programs sharing the same data and evaluation: `train_cnn.c` (convolution + pooling ahead of the fully-connected layers) and `train_fc.c` (a plain fully-connected network on the same task -- the baseline a CNN is normally justified against). Both use `data_prep.[ch]`/`split.py` above (this example's `samples.csv` download rule stays local to its own Makefile, though, since -- unlike the splitting logic -- fetching *this* dataset specifically isn't reusable), and share a single architecture-agnostic `test.c`. `predict.c` demonstrates how to use either's trained model in a target application to make predictions on new data (hardcoded to this example's 28x28 MNIST-style input, unlike the format-agnostic tools above). See its [README](examples/character_recognition/README.md) for the embedded-system framing, both architectures' diagrams, and sample output.
+
+11. [`examples/gesture_recognition/`](examples/gesture_recognition/README.md) - Trains a recurrent (RNN) neural network to classify synthetic 3-axis accelerometer "gesture" time-series (the kind of sensor stream a wearable or remote control's IMU would produce) instead of a fixed image dataset -- no data file to download; every training window is generated on the fly by `gesture_data.[ch]`, shared by `train.c` and `test.c` so neither duplicates the other's data-generation logic. `test.c` independently re-evaluates a saved model against a freshly-synthesized batch of windows (unseen by construction, since nothing about `train.c`'s data is ever persisted to disk) and reports a confusion matrix plus per-class/overall accuracy. See its [README](examples/gesture_recognition/README.md) for the embedded-system framing, architecture diagram, and sample output.
+
+12. [`examples/fall_detection/`](examples/fall_detection/README.md) - Trains three recurrent neural network architectures -- `train_rnn.c`, `train_gru.c`, `train_lstm.c` -- on the identical task: continuously monitoring a synthetic 3-axis accelerometer stream (generated by `fall_data.[ch]`) for a fall event, a multi-phase pattern (free-fall dip, impact spike, then a long stretch of post-fall stillness) spread across a much longer sequence than the gesture example's fixed windows, with a per-timestep (not per-window) label. All three share a single architecture-agnostic `test.c`, which independently re-evaluates a saved model against a freshly-synthesized, larger batch of monitoring sequences and reports per-timestep accuracy, recall (falls ever detected), false alarms, and average detection latency. See its [README](examples/fall_detection/README.md) for the embedded-system framing, all three architectures' diagrams, and a measured (not assumed) comparison of how quickly each converges.
+
+13. [`examples/wake_word_detection/`](examples/wake_word_detection/README.md) - Trains a GRU-based network (the winner of a real RNN/GRU/LSTM comparison on this task -- see its README) to classify a whole ~1-second spoken utterance as a wake word or not, using `audio_features.[ch]`/`wav_reader.[ch]` above to turn the real Google Speech Commands dataset into training data via this example's own `prepare_data.c` (unlike MNIST's pre-flattened download, turning audio into features is itself the thing this example demonstrates). See its [README](examples/wake_word_detection/README.md) for the embedded-system framing, the library-vs-application split `predict.c` illustrates, and build/run instructions.
 
 ## Features
 
@@ -82,6 +88,7 @@ Each directory under `examples/` has its own Makefile and is built separately --
 cd examples/character_recognition && make  # CNN and plain-FC digit recognition (MNIST)
 cd examples/gesture_recognition && make    # RNN gesture classification
 cd examples/fall_detection && make         # RNN, GRU, and LSTM fall detection
+cd examples/wake_word_detection && make    # GRU wake word detection (Speech Commands)
 ```
 
 The general-purpose tools below (`prune`, `quantize`, `export`, `summary`, ...) live at the repository root and work on a saved model from *any* example -- run them either from the root with a path into the example's directory (`./prune examples/character_recognition/model.txt 10`), or from inside the example's directory with a relative path back to the tool (`../../prune model.txt 10`).
@@ -114,6 +121,12 @@ cd examples/fall_detection
 ./train_lstm fall_model_lstm.txt
 ```
 
+To train the wake-word-detection example instead (see `examples/wake_word_detection/` above): the first `make` there downloads the real Speech Commands dataset and builds `train.csv`/`validation.csv`/`test.csv` from it, which takes a while the first time.
+```
+cd examples/wake_word_detection
+./train wake_word_model.txt
+```
+
 To evaluate the digit-recognition model's performance:
 ```
 cd examples/character_recognition
@@ -130,6 +143,12 @@ To evaluate a fall-detection model instead (prints per-timestep accuracy, recall
 ```
 cd examples/fall_detection
 ./test fall_model_rnn.txt
+```
+
+To evaluate a wake-word-detection model instead (prints accuracy, false-reject rate, and false-accept rate against the held-out `test.csv` split):
+```
+cd examples/wake_word_detection
+./test wake_word_model.txt
 ```
 
 To use a trained digit-recognition model:
@@ -193,6 +212,8 @@ For targets with no filesystem, `nn_load_model_memory(data, size)` parses that s
 ## Integration
 
 To use this nn library in your own embedded system, it is only necessary to pull in the nn.c and nn.h files into your project. The other source files in the nn package are intended for data preparation for offline training, as well as examples of training and inference. For microcontroller-class inference-only use, nn_load_model_inplace() (see Model File Format above) is the intended entry point: it runs inference directly out of a flash-resident model with no RAM copy of the weights; `nn_load_model_memory()` is the fallback when the model instead needs to be copied into (and is free to be modified/replaced in) RAM.
+
+The one exception is `audio_features.[ch]` (see Overview above): if your embedded project does on-device audio feature extraction the way `examples/wake_word_detection/` does, pull that pair of files in alongside `nn.c`/`nn.h` too -- unlike every other file in this repository besides those two, it's meant to run on the target itself, not just at training time.
 
 ### Embedding an inplace model as a C header
 

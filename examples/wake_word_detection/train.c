@@ -150,6 +150,30 @@ int main(int argc, char *argv[]) {
     // architecture the comparison against a plain RNN and an LSTM (see
     // this example's README).
     nn_add_layer(nn, LAYER_TYPE_GRU, hidden_units, ACTIVATION_FUNCTION_TYPE_NONE, NULL);
+    // LAYER_TYPE_DROPOUT (see examples/character_recognition/train_cnn.c's
+    // identical layer for the FC case) was tried here, between the GRU and
+    // the output layer, on the theory that training error dropping to
+    // near-zero while validation error stayed noisy meant the GRU (nearly
+    // all of this network's ~5,121 parameters) was overfitting. Measured
+    // across several runs at two rates, it made things worse, not better
+    // (0.3: 82-87% test accuracy, avg ~85%; 0.1: 83-86%, avg ~84%; vs. no
+    // dropout's 87-89%, avg ~88% -- see this example's README).
+    //
+    // The first suspect was that nn_dropout_forward() (nn.c) resampled its
+    // mask fresh on every call, injecting a different random mask into the
+    // GRU's hidden state on every one of a clip's 49 per-timestep frames
+    // instead of holding one consistent mask for the whole sequence (the
+    // "locked"/variational-dropout technique effective RNN dropout needs).
+    // That was real and has since been fixed at the library level: a
+    // DROPOUT layer in any network with an RNN/GRU/LSTM layer now holds its
+    // mask until nn_reset_state() marks a new sequence (see
+    // dropout_mask_valid's comment in nn.h) -- auto-detected, no config
+    // needed here. Retested with that fix in place, though, dropout at 0.3
+    // still scored 82-83% here, no better than before the fix. So the
+    // per-timestep resampling bug was worth fixing on its own correctness
+    // merits, but it wasn't (or wasn't the whole) explanation for dropout
+    // underperforming on this specific model/dataset -- left out here
+    // either way. See git history for the exact layer this tried.
     // Single sigmoid output: wake-word probability, trained with ordinary
     // sigmoid+MSE -- there's only one class here, not several mutually
     // exclusive ones, so no softmax.

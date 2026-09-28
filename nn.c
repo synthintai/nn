@@ -533,6 +533,25 @@ static void nn_conv_backward(nn_t *nn, int layer, float *grad_in)
   }
 }
 
+// True if `nn` contains a stateful recurrent layer (RNN/GRU/LSTM) anywhere
+// in its stack. Those layer types always process one timestep per
+// nn_train()/nn_predict()/nn_error() call (see their comments in nn.h), a
+// property of the whole network rather than of any one layer's position --
+// nn_dropout_forward() below uses this to decide whether it's regularizing
+// an independent sample (ordinary dropout: resample every call) or one
+// frame of an ongoing sequence (hold one mask per sequence instead). depth
+// is small in practice (a handful of layers), so this cheap O(depth) scan
+// on every dropout forward call isn't worth caching.
+static bool nn_has_recurrent_layer(const nn_t *nn)
+{
+  for (int layer = 1; layer < (int)nn->depth; layer++) {
+    if (nn->layer_type[layer] == LAYER_TYPE_RNN || nn->layer_type[layer] == LAYER_TYPE_GRU ||
+        nn->layer_type[layer] == LAYER_TYPE_LSTM)
+      return true;
+  }
+  return false;
+}
+
 // Dropout layer forward pass: a same-width pass-through of the previous
 // layer's output. At inference (training == false) every unit simply
 // passes through unchanged. During training, each unit is independently
@@ -558,6 +577,26 @@ static void nn_dropout_forward(nn_t *nn, int layer, bool training)
     memcpy(pre, in, (size_t)width * sizeof(float));
     return;
   }
+  // In a network with a recurrent layer, every call is one timestep of an
+  // ongoing sequence, not an independent sample -- hold the same mask
+  // already cached in dropout_scale[layer] for the whole sequence instead
+  // of drawing a fresh one every timestep, which would inject a different
+  // random mask into the recurrent layer's hidden state on every single
+  // frame rather than cleanly regularizing it. dropout_mask_valid[layer]
+  // is invalidated by nn_reset_state(), the same call that already marks a
+  // new, independent sequence starting for RNN/GRU/LSTM state -- see its
+  // comment in nn.h. A network with no recurrent layer never takes this
+  // branch (nn_has_recurrent_layer() is false), so this is a no-op change
+  // for a purely feedforward network's dropout, which still resamples
+  // every call exactly as before.
+  if (nn->dropout_mask_valid[layer] && nn_has_recurrent_layer(nn)) {
+    const float *scale = nn->dropout_scale[layer];
+    for (int j = 0; j < width; j++) {
+      out[j] = in[j] * scale[j];
+      pre[j] = out[j];
+    }
+    return;
+  }
   dropout_t *dropout = nn->config[layer];
   const float rate = dropout->rate;
   const float inv_keep = 1.0f / (1.0f - rate); // rate < 1 is enforced by nn_add_layer()
@@ -568,6 +607,7 @@ static void nn_dropout_forward(nn_t *nn, int layer, bool training)
     out[j] = in[j] * scale[j];
     pre[j] = out[j];
   }
+  nn->dropout_mask_valid[layer] = true;
 }
 
 // Routes a dropout layer's loss (dE/d(preact), already computed in
@@ -1089,6 +1129,7 @@ nn_t *nn_init(void)
   nn->bias_scale = NULL;
   nn->pool_argmax = NULL;
   nn->dropout_scale = NULL;
+  nn->dropout_mask_valid = NULL;
   nn->rnn_hidden_prev = NULL;
   nn->lstm_cell = NULL;
   nn->lstm_cache = NULL;
@@ -1207,6 +1248,9 @@ void nn_free(nn_t *nn)
       free(nn->dropout_scale[layer]);
     free(nn->dropout_scale);
   }
+  // Flat, one-bool-per-layer (not nested like dropout_scale above), same
+  // convention as bias_scale -- a single free, no per-layer loop.
+  free(nn->dropout_mask_valid);
   // Free the RNN previous-hidden-state cache (independent of quantized
   // state, same as pool_argmax/dropout_scale above)
   if (nn->rnn_hidden_prev) {
@@ -1404,6 +1448,10 @@ nn_error_t nn_add_layer(nn_t *nn, layer_type_t layer_type, int width, int activa
   if (nn->dropout_scale == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
   nn->dropout_scale[nn->depth - 1] = NULL;
+  nn->dropout_mask_valid = (bool *)realloc(nn->dropout_mask_valid, (nn->depth) * sizeof(bool));
+  if (nn->dropout_mask_valid == NULL)
+    return NN_ERROR_OUT_OF_MEMORY;
+  nn->dropout_mask_valid[nn->depth - 1] = false;
   nn->rnn_hidden_prev = (float **)realloc(nn->rnn_hidden_prev, (nn->depth) * sizeof(float *));
   if (nn->rnn_hidden_prev == NULL)
     return NN_ERROR_OUT_OF_MEMORY;
@@ -2138,6 +2186,13 @@ void nn_reset_state(nn_t *nn)
       memset(nn->neuron[layer], 0, (size_t)nn->width[layer] * sizeof(float));
     if (nn->layer_type[layer] == LAYER_TYPE_LSTM)
       memset(nn->lstm_cell[layer], 0, (size_t)nn->width[layer] * sizeof(float));
+    // Also invalidates any DROPOUT layer's held mask (see
+    // dropout_mask_valid's comment in nn.h) -- this call is already the
+    // "a new, independent sequence starts here" signal for RNN/GRU/LSTM
+    // state above, so it's the same boundary a recurrent network's dropout
+    // mask needs to refresh at.
+    if (nn->layer_type[layer] == LAYER_TYPE_DROPOUT)
+      nn->dropout_mask_valid[layer] = false;
   }
 }
 
@@ -2921,6 +2976,7 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
   nn->bias_quantized = NULL; nn->bias_scale = NULL;
   nn->pool_argmax = NULL;
   nn->dropout_scale = NULL;
+  nn->dropout_mask_valid = NULL;
   nn->rnn_hidden_prev = NULL;
   nn->lstm_cell = NULL;
   nn->lstm_cache = NULL;
@@ -2964,6 +3020,10 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
   // that an inplace-loaded (inference-only) model never populates or reads;
   // still allocated (all-NULL) so nn_free() can safely iterate it uniformly.
   nn->dropout_scale = (float **)calloc(depth, sizeof(*nn->dropout_scale));
+  // Same reasoning as dropout_scale above -- training-only, unused by an
+  // inplace-loaded model -- and calloc's all-zero (false) is exactly the
+  // "no mask sampled yet" starting state nn_add_layer() also gives it.
+  nn->dropout_mask_valid = (bool *)calloc(depth, sizeof(*nn->dropout_mask_valid));
   // Per RNN layer, holds the previous-hidden-state cache (see its field
   // comment in nn.h) -- unlike dropout_scale, this IS populated by every
   // forward pass (including nn_predict()/nn_error() on an immutable model),
@@ -2984,7 +3044,7 @@ static nn_t *nn_load_model_inplace_impl(const uint8_t *data, size_t size, bool c
   nn->gru_gate_grad = (float **)calloc(depth, sizeof(*nn->gru_gate_grad));
   bool top_level_ok = nn->layer_type && nn->width && nn->activation && nn->config &&
       nn->neuron && nn->loss && nn->preact && nn->weight_scale && nn->bias_scale &&
-      nn->pool_argmax && nn->dropout_scale && nn->rnn_hidden_prev &&
+      nn->pool_argmax && nn->dropout_scale && nn->dropout_mask_valid && nn->rnn_hidden_prev &&
       nn->lstm_cell && nn->lstm_cache && nn->lstm_gate_grad &&
       nn->gru_cache && nn->gru_gate_grad;
   if (nn->quantized) {

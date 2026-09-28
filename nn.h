@@ -243,6 +243,21 @@ typedef struct {
   // in nn.c) -- at inference a DROPOUT layer is a pure pass-through and this
   // is never populated or read.
   float **dropout_scale;
+  // One bool per layer (only meaningful for a DROPOUT layer; unused
+  // elsewhere, same convention as bias_scale). False until
+  // nn_dropout_forward() samples a mask into dropout_scale[layer] above;
+  // nn_reset_state() clears it back to false. In a network with no RNN/GRU/
+  // LSTM layer, nn_dropout_forward() ignores this and resamples every
+  // training call regardless (ordinary per-sample dropout). In a network
+  // that DOES have one -- where every nn_train()/nn_predict()/nn_error()
+  // call is one timestep of an ongoing sequence, not an independent sample
+  // -- nn_dropout_forward() instead holds the same mask for the whole
+  // sequence once this is true, only resampling right after
+  // nn_reset_state() (the same call that already marks a new sequence
+  // starting for RNN/GRU/LSTM state) sets it back to false. Without this,
+  // dropout would inject a different random mask into a recurrent layer's
+  // hidden state on every single frame instead of cleanly regularizing it.
+  bool *dropout_mask_valid;
   // Per RNN layer only (NULL otherwise): a copy of this layer's hidden state
   // (nn->neuron[layer]) as it was just *before* the most recent forward
   // pass overwrote it with the new timestep's state. forward_propagation()
@@ -440,13 +455,17 @@ nn_error_t nn_dequantize(nn_t *nn);
 // Zeros every RNN/LSTM/GRU layer's persistent state -- nn->neuron[layer]
 // (the hidden state, for all three) and, for an LSTM layer only,
 // nn->lstm_cell[layer] (its cell state) too -- GRU, like RNN, has just the
-// one state. Call this before feeding the first timestep of a new,
-// independent sequence into a model that has an RNN, LSTM, or GRU layer --
-// otherwise the final state left over from whatever sequence was last run
-// through the model (or uninitialized-but-zeroed state, for a freshly
-// constructed/loaded model) carries over into the new sequence. Safe to
-// call on an immutable (nn_load_model_inplace()) model too: it only touches
-// the always-owned neuron[]/lstm_cell[] buffers, never the aliased
+// one state. Also invalidates any DROPOUT layer's held mask (see
+// dropout_mask_valid's comment above) -- in a network with a recurrent
+// layer, this is the same "a new, independent sequence starts here"
+// boundary dropout needs to refresh at, same as RNN/GRU/LSTM state. Call
+// this before feeding the first timestep of a new, independent sequence
+// into a model that has an RNN, LSTM, or GRU layer -- otherwise the final
+// state left over from whatever sequence was last run through the model
+// (or uninitialized-but-zeroed state, for a freshly constructed/loaded
+// model) carries over into the new sequence. Safe to call on an immutable
+// (nn_load_model_inplace()) model too: it only touches the always-owned
+// neuron[]/lstm_cell[]/dropout_mask_valid buffers, never the aliased
 // weight/bias arrays.
 void nn_reset_state(nn_t *nn);
 // Selects the optimizer nn_train() uses from here on, and (re)allocates

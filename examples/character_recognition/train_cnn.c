@@ -150,6 +150,47 @@ int main(int argc, char *argv[]) {
       .pooling_type = POOLING_TYPE_MAX,
     };
     nn_add_layer(nn, LAYER_TYPE_POOL, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (pool_t *)&pool);
+    // A second conv+pool stage, rather than widening the first one: a
+    // wider first stage (e.g. 16 filters instead of 8) would double the
+    // flattened width feeding the first FC layer below (3136 instead of
+    // 1568), since pooling only shrinks the spatial dims, not the channel
+    // count -- and that FC layer already dominates this network's
+    // parameter count (see this file's/this example's README's comment on
+    // that), so widening the first stage grows the network in exactly the
+    // wrong place for comparatively little accuracy (measured: ~191K ->
+    // ~379K params for +0.1-0.6 points of test accuracy). A second,
+    // smaller-channel-count-relative-to-spatial-size stage instead
+    // *shrinks* what reaches the FC layer -- 16 channels over the now-14x14
+    // input pools down to 7x7x16 = 784, half of the single-stage
+    // network's 1568 -- while still extracting a genuine second level of
+    // features (edges-of-edges, not just edges) over the first stage's
+    // 8x14x14 output, the same reasoning any deeper CNN stacks conv stages
+    // for.
+    cnn_t cnn2 = {
+      .in_h = 14,
+      .in_w = 14,
+      .in_channels = 8,
+      .out_channels = 16,
+      .kernel_size = 5,
+      .stride = 1,
+      .padding = 2,
+      .dilation = 1,
+      .weight_init = NN_INIT_XAVIER,
+      .bias_init = NN_INIT_ZEROS,
+    };
+    nn_add_layer(nn, LAYER_TYPE_CNN, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (cnn_t *)&cnn2);
+    // Same "same" padding and 2x2/stride-2 max pool as the first stage,
+    // just at this stage's 14x14x16 shape: (14 + 2*2 - 5)/1 + 1 == 14, then
+    // pooled to 7x7x16.
+    pool_t pool2 = {
+      .in_h = 14,
+      .in_w = 14,
+      .channels = 16,
+      .pool_size = 2,
+      .stride = 2,
+      .pooling_type = POOLING_TYPE_MAX,
+    };
+    nn_add_layer(nn, LAYER_TYPE_POOL, 0, ACTIVATION_FUNCTION_TYPE_LINEAR, (pool_t *)&pool2);
     // GELU instead of RELU: smooth and non-monotonic (dips slightly negative
     // before rising) rather than flat-zero for any negative preact, so a
     // unit that drifts negative still has a small, nonzero gradient and can

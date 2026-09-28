@@ -12,19 +12,21 @@ This example trains two different architectures on the identical data, so the tr
 
 ### `train_cnn.c` -- convolution + pooling ahead of the fully-connected layers
 
-![CNN architecture: Input 28x28x1, 5x5 conv x8 same padding to 28x28x8, 2x2 max pool to 14x14x8, flatten into a 120-unit GELU FC layer, 30% dropout, a 20-unit GELU FC layer, then a 10-way softmax output](architecture_cnn.svg)
+![CNN architecture: Input 28x28x1, 5x5 conv x8 same padding to 28x28x8, 2x2 max pool to 14x14x8, a second 5x5 conv x16 same padding to 14x14x16, a second 2x2 max pool to 7x7x16, flatten into a 120-unit GELU FC layer, 30% dropout, a 20-unit GELU FC layer, then a 10-way softmax output](architecture_cnn.svg)
 
 | Layer | Type | Output shape | Notes |
 |---|---|---|---|
 | 0 | Input | 28×28×1 | one channel, raw pixel intensities |
 | 1 | CNN | 28×28×8 | 5×5 kernel, 8 filters, stride 1, "same" padding (keeps the full 28×28 instead of shrinking to 24×24, so digit strokes near the border still get seen by every kernel position) |
 | 2 | Pool | 14×14×8 | 2×2 max pool, stride 2 |
-| 3 | FC | 120 | GELU |
-| 4 | Dropout | 120 | 30%, training only |
-| 5 | FC | 20 | GELU |
-| 6 | Output | 10 | Softmax (cross-entropy loss) |
+| 3 | CNN | 14×14×16 | 5×5 kernel, 16 filters, stride 1, "same" padding -- a second round of feature extraction (edges-of-edges, not just edges) over the first stage's pooled output |
+| 4 | Pool | 7×7×16 | 2×2 max pool, stride 2 |
+| 5 | FC | 120 | GELU |
+| 6 | Dropout | 120 | 30%, training only |
+| 7 | FC | 20 | GELU |
+| 8 | Output | 10 | Softmax (cross-entropy loss) |
 
-~191K trainable parameters -- and, worth noticing, the convolution itself contributes almost none of that (5×5×1×8 + 8 bias = 208 weights): the first FC layer (1568→120, after flattening the pooled 8×14×14 volume) is what actually dominates the parameter count. The convolution's job here isn't to be big, it's to turn a 784-pixel image into a much smaller, translation-invariant 1568-value summary before the expensive fully-connected layers ever see it.
+~100K trainable parameters -- roughly half of a single-conv-stage version of this same network (~191K), despite adding a whole extra layer. Both convolutions together still contribute almost none of that (208 + 3,216 = 3,424 weights): the first FC layer is still what dominates the parameter count, but a *second* conv+pool stage shrinks what reaches it (7×7×16 = 784, flattened) instead of a single, wider stage growing it -- widening the first stage to 16 filters instead (an alternative that was measured, not just assumed inferior) still leaves a single 14×14×8→flatten, doubling the FC layer's input to 3,136 and its weight count right along with it, for a smaller accuracy gain than adding this second stage does. See [How they compare](#how-they-compare) below for the measured numbers behind that claim.
 
 ### `train_fc.c` -- plain fully-connected network, no convolution
 
@@ -45,10 +47,20 @@ A real run of each (see [Sample output](#sample-output) below for the full logs)
 
 | | Parameters | Epochs to converge | Test accuracy |
 |---|---|---|---|
-| `train_cnn` | ~191K | 9 | 97.91% |
+| `train_cnn` | ~100K | 11 | 98.49% |
 | `train_fc` | ~109K | 8 | 96.13% |
 
 Your numbers will vary run to run (random weight init, shuffled data), but expect the CNN to consistently edge out the FC network on this task -- the point of having both examples side by side.
+
+`train_cnn.c`'s two-conv-stage shape above isn't the only one that was tried -- measured against two alternatives on the same data (two runs each, since a single run isn't enough to separate a real difference from ordinary run-to-run noise):
+
+| | Parameters | Test accuracy (2 runs) | Avg |
+|---|---|---|---|
+| Single stage, 8 filters | ~191K | 97.64%, 97.73% | 97.69% |
+| Single stage, 16 filters | ~379K | 97.77%, 98.31% | 98.04% |
+| **Two stages, 8→16 filters (current)** | **~100K** | **98.44%, 98.49%** | **98.47%** |
+
+Widening the single conv stage to 16 filters does buy back some accuracy over the original 8-filter version, but at roughly double the parameters (since the flattened width feeding the first FC layer doubles right along with it). Adding a second, narrower conv+pool stage instead beat both -- higher accuracy *and* about half the parameters of even the original 8-filter version -- which is why it's what ships here.
 
 ## Build and run
 
@@ -85,39 +97,41 @@ Training log (`train_cnn`):
 ```
 Creating new model.
 train error, validation error, learning rate
-0.25635, 0.10860, 0.00500
-0.12537, 0.09495, 0.00500
-0.09527, 0.07517, 0.00500
-0.08012, 0.07398, 0.00500
-0.07031, 0.07500, 0.00500
-0.06244, 0.07426, 0.00500
-0.05833, 0.08272, 0.00500
-0.05352, 0.09144, 0.00500
-0.05106, 0.08093, 0.00500
-No validation improvement for 5 epochs (best: 0.07398) -- stopping early.
-Final (last epoch) train error: 0.051060, validation error: 0.080931
-Best validation error (the model saved to disk): 0.073982
-Training epochs: 9
+0.22387, 0.08833, 0.00500
+0.10271, 0.08806, 0.00500
+0.08255, 0.05924, 0.00500
+0.07669, 0.05936, 0.00500
+0.06736, 0.05972, 0.00500
+0.06029, 0.05364, 0.00500
+0.06054, 0.05408, 0.00500
+0.05498, 0.06120, 0.00500
+0.05740, 0.06391, 0.00500
+0.05614, 0.05674, 0.00500
+0.05196, 0.06034, 0.00500
+No validation improvement for 5 epochs (best: 0.05364) -- stopping early.
+Final (last epoch) train error: 0.051964, validation error: 0.060338
+Best validation error (the model saved to disk): 0.053642
+Training epochs: 11
 ```
 
 `test model_cnn.txt`:
 ```
-Train: 55487/56000 = 99.08%
-Test : 6854/7000 = 97.91%
+Train: 55544/56000 = 99.19%
+Test : 6894/7000 = 98.49%
 ```
 
 `predict model_cnn.txt` (per-class probability for one sample digit):
 ```
-0: 0.00041
-1: 0.00057
-2: 0.00153
-3: 0.03929
-4: 0.00002
-5: 0.00931
-6: 0.00072
-7: 0.00137
-8: 0.94517
-9: 0.00160
+0: 0.00104
+1: 0.00006
+2: 0.00126
+3: 0.00078
+4: 0.00013
+5: 0.00020
+6: 0.00405
+7: 0.00001
+8: 0.99149
+9: 0.00099
 ```
 
 Training log (`train_fc`):

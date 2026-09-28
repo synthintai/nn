@@ -6,7 +6,7 @@ Read in order, they also tell a story: each example needs a little more memory (
 
 | Example | Layer type | Task | Parameters |
 |---|---|---|---|
-| [`character_recognition`](character_recognition/README.md) | CNN *vs.* plain FC (both included, for comparison) | Classify a whole 28×28 image at once -- no memory of anything needed | ~191K (CNN) / ~109K (FC) |
+| [`character_recognition`](character_recognition/README.md) | CNN *vs.* plain FC (both included, for comparison) | Classify a whole 28×28 image at once -- no memory of anything needed | ~100K (CNN, two conv+pool stages) / ~109K (FC) |
 | [`gesture_recognition`](gesture_recognition/README.md) | RNN | Classify a short (32-timestep) burst of sensor readings -- needs to remember the last second or so | 388 |
 | [`fall_detection`](fall_detection/README.md) | RNN *vs.* GRU *vs.* LSTM (all three included, for comparison) | Continuously monitor a long (150-timestep) stream and flag a rare event -- needs to remember something brief that happened many steps ago, selectively, without it decaying | 337 (RNN) / 977 (GRU) / 1,297 (LSTM) |
 | [`wake_word_detection`](wake_word_detection/README.md) | GRU (the winner of a measured RNN *vs.* GRU *vs.* LSTM comparison -- see its README) | Classify a whole (49-frame) real spoken utterance as a wake word or not -- same fixed-window shape as `gesture_recognition`, but on real audio (via a new `audio_features.[ch]` feature-extraction stage) instead of a synthetic sensor stream | ~5,121 |

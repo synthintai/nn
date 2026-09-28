@@ -1,13 +1,16 @@
 *.a
 *.o
 *.so
+dataset
 dequantize
 export
 import
 predict
+prepare_data
 prune
 quantize
 samples.csv
+speech_commands_v0.02.tar.gz
 summary
 test
 test.csv

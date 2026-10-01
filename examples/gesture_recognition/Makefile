@@ -14,10 +14,10 @@ gesture_data.o: gesture_data.c gesture_data.h
 	$(CC) $(CFLAGS) -c $<
 
 train: train.c gesture_data.o ../../libnn.a
-	$(CC) $(CFLAGS) -I../.. $(LDFLAGS) train.c gesture_data.o ../../libnn.a -o $@
+	$(CC) $(CFLAGS) -I../.. train.c gesture_data.o ../../libnn.a $(LDFLAGS) -o $@
 
 test: test.c gesture_data.o ../../libnn.a
-	$(CC) $(CFLAGS) -I../.. $(LDFLAGS) test.c gesture_data.o ../../libnn.a -o $@
+	$(CC) $(CFLAGS) -I../.. test.c gesture_data.o ../../libnn.a $(LDFLAGS) -o $@
 
 clean:
 	$(RM) gesture_data.o train test model.*

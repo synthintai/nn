@@ -16,18 +16,18 @@ all: train_cnn train_fc test predict $(CSV_OUTPUTS)
 	$(MAKE) -C ../.. data_prep.o
 
 train_cnn: train_cnn.c ../../data_prep.o ../../libnn.a
-	$(CC) $(CFLAGS) -I../.. $(LDFLAGS) train_cnn.c ../../data_prep.o ../../libnn.a -o $@
+	$(CC) $(CFLAGS) -I../.. train_cnn.c ../../data_prep.o ../../libnn.a $(LDFLAGS) -o $@
 
 train_fc: train_fc.c ../../data_prep.o ../../libnn.a
-	$(CC) $(CFLAGS) -I../.. $(LDFLAGS) train_fc.c ../../data_prep.o ../../libnn.a -o $@
+	$(CC) $(CFLAGS) -I../.. train_fc.c ../../data_prep.o ../../libnn.a $(LDFLAGS) -o $@
 
 test: test.c ../../data_prep.o ../../libnn.a
-	$(CC) $(CFLAGS) -I../.. $(LDFLAGS) test.c ../../data_prep.o ../../libnn.a -o $@
+	$(CC) $(CFLAGS) -I../.. test.c ../../data_prep.o ../../libnn.a $(LDFLAGS) -o $@
 
 # predict.c doesn't use data_prep.[ch] (it reads a single hardcoded sample,
 # not train/test CSVs), so it links against ../../libnn.a alone.
 predict: predict.c ../../libnn.a
-	$(CC) $(CFLAGS) -I../.. $(LDFLAGS) predict.c ../../libnn.a -o $@
+	$(CC) $(CFLAGS) -I../.. predict.c ../../libnn.a $(LDFLAGS) -o $@
 
 samples.csv:
 	curl -s -S -L -f --compressed http://synthint.ai/training_data/$@.gz -z $@ -o $@.gz && gunzip $@.gz

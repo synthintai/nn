@@ -6,18 +6,6 @@ https://synthint.ai
 
 SPDX-License-Identifier: Apache-2.0
 
-## Why this library
-
-There are other embedded neural network options out there -- TensorFlow Lite for Microcontrollers and Microsoft's Embedded Learning Library among them. This one earns a place next to them on a few specific points, not by trying to out-ecosystem them:
-
-* **On-device training, not just inference.** TFLite Micro and ELL are both built around a "train on a workstation with the full framework, freeze the graph, deploy a read-only model" workflow -- neither has a supported path for a deployed device to keep learning. `nn_train()` here works on any owned (non-flash-aliased) model, with a selectable optimizer (`nn_set_optimizer()`: SGD, Momentum, or Adam), so a device can keep training in the field: personalizing a wake-word or gesture model to one user's voice or motion after shipping, adapting to one sensor's drift, or fine-tuning without a round-trip to a server or a full reflash cycle.
-
-* **Small enough to audit, not just small enough to run.** The entire library is two files (`nn.c`/`nn.h`), pure C with no dependency beyond libc/libm -- no C++, no interpreter, no flatbuffers/kernel-registration machinery to pull in or port. For safety-critical or certified embedded work, where someone has to actually read and sign off on what's running, handing a reviewer a library they can get through in an afternoon is a real advantage over auditing a framework's dependency graph. Pure C also means it builds cleanly on toolchains where a C++ requirement is itself an obstacle.
-
-* **Zero-copy, flash-resident deployment as a first-class format.** `nn_load_model_inplace()` aliases a model's weights directly out of a flash-resident buffer -- no RAM copy, no parse step. A small GRU keyword-spotting model (20 inputs, 32 hidden units) quantized to int8 and exported with `export --inplace` comes to 5,572 bytes, loaded straight out of `.rodata` with zero additional RAM for weights. See [Model File Format](#model-file-format) below for the full format and [`export`](#instructions)'s `--inplace` flag.
-
-What this library is deliberately not: a place to run attention or transformer-based models (`LAYER_TYPE_ATTENTION`/`LAYER_TYPE_TRANSFORMER` are placeholders with no implementation planned -- see the Features section below for why), and not an attempt to match TFLite Micro's model zoo, vendor board support, or CMSIS-NN-level kernel optimization. The target is small, classic on-device models that need to keep learning after deployment, on whatever MCU toolchain you already have -- not the broadest possible model support.
-
 ## Overview
 
 This is a lightweight neural network library for use in microcontrollers and embedded systems.
@@ -87,6 +75,18 @@ The following layer types are supported (added one at a time, in order, via `nn_
 * **Output** - the network's final layer; computed the same way as Fully Connected, with support for Softmax (see Features above) in addition to the other activation functions.
 
 `layer_type_t` also declares `LAYER_TYPE_ATTENTION`/`LAYER_TYPE_TRANSFORMER` placeholders, but they're not implemented and not currently planned: attention needs to weight multiple past states at once (and full self-attention is O(n²) in sequence length), which conflicts with the flat, O(1)-per-timestep memory model every layer type above is built around.
+
+## Why this library
+
+There are other embedded neural network options out there -- TensorFlow Lite for Microcontrollers and Microsoft's Embedded Learning Library among them. This one earns a place next to them on a few specific points, not by trying to out-ecosystem them:
+
+* **On-device training, not just inference.** TFLite Micro and ELL are both built around a "train on a workstation with the full framework, freeze the graph, deploy a read-only model" workflow -- neither has a supported path for a deployed device to keep learning. `nn_train()` here works on any owned (non-flash-aliased) model, with a selectable optimizer (`nn_set_optimizer()`: SGD, Momentum, or Adam), so a device can keep training in the field: personalizing a wake-word or gesture model to one user's voice or motion after shipping, adapting to one sensor's drift, or fine-tuning without a round-trip to a server or a full reflash cycle.
+
+* **Small enough to audit, not just small enough to run.** The entire library is two files (`nn.c`/`nn.h`), pure C with no dependency beyond libc/libm -- no C++, no interpreter, no flatbuffers/kernel-registration machinery to pull in or port. For safety-critical or certified embedded work, where someone has to actually read and sign off on what's running, handing a reviewer a library they can get through in an afternoon is a real advantage over auditing a framework's dependency graph. Pure C also means it builds cleanly on toolchains where a C++ requirement is itself an obstacle.
+
+* **Zero-copy, flash-resident deployment as a first-class format.** `nn_load_model_inplace()` aliases a model's weights directly out of a flash-resident buffer -- no RAM copy, no parse step. A small GRU keyword-spotting model (20 inputs, 32 hidden units) quantized to int8 and exported with `export --inplace` comes to 5,572 bytes, loaded straight out of `.rodata` with zero additional RAM for weights. See [Model File Format](#model-file-format) below for the full format and `export`'s `--inplace` flag, just below.
+
+What this library is deliberately not: a place to run attention or transformer-based models (`LAYER_TYPE_ATTENTION`/`LAYER_TYPE_TRANSFORMER` are placeholders with no implementation planned -- see the Features section above for why), and not an attempt to match TFLite Micro's model zoo, vendor board support, or CMSIS-NN-level kernel optimization. The target is small, classic on-device models that need to keep learning after deployment, on whatever MCU toolchain you already have -- not the broadest possible model support.
 
 ## Instructions
 

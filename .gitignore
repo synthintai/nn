@@ -1,10 +1,13 @@
 *.a
 *.o
 *.so
+annotations.tar.gz
 dataset
 dequantize
 export
+images.tar.gz
 import
+kagglecatsanddogs_5340.zip
 predict
 prepare_data
 prune
@@ -14,6 +17,8 @@ speech_commands_v0.02.tar.gz
 summary
 test
 test.csv
+test_oxford.csv
+test_oxford_labels.txt
 train
 train.csv
 train_cnn

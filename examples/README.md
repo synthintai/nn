@@ -1,6 +1,6 @@
 # Examples
 
-Four self-contained examples of constructing, training, and evaluating a network with this library. Each has its own Makefile (`cd examples/<name> && make`, recursing into the top-level Makefile for the shared library), its own README (embedded-system framing, architecture diagram, build/run instructions, sample output), and generates, synthesizes, or downloads its own training data -- nothing here needs to be built from the repository root.
+Five self-contained examples of constructing, training, and evaluating a network with this library. Each has its own Makefile (`cd examples/<name> && make`, recursing into the top-level Makefile for the shared library), its own README (embedded-system framing, architecture diagram, build/run instructions, sample output), and generates, synthesizes, or downloads its own training data -- nothing here needs to be built from the repository root.
 
 Read in order, they also tell a story: each example needs a little more memory (or a little more realism) than the last to solve its task, and the layer type -- or, for the last one, the extra feature-extraction stage in front of it -- tracks that escalation directly.
 
@@ -10,6 +10,7 @@ Read in order, they also tell a story: each example needs a little more memory (
 | [`gesture_recognition`](gesture_recognition/README.md) | RNN | Classify a short (32-timestep) burst of sensor readings -- needs to remember the last second or so | 388 |
 | [`fall_detection`](fall_detection/README.md) | RNN *vs.* GRU *vs.* LSTM (all three included, for comparison) | Continuously monitor a long (150-timestep) stream and flag a rare event -- needs to remember something brief that happened many steps ago, selectively, without it decaying | 337 (RNN) / 977 (GRU) / 1,297 (LSTM) |
 | [`wake_word_detection`](wake_word_detection/README.md) | GRU (the winner of a measured RNN *vs.* GRU *vs.* LSTM comparison -- see its README) | Classify a whole (49-frame) real spoken utterance as a wake word or not -- same fixed-window shape as `gesture_recognition`, but on real audio (via a new `audio_features.[ch]` feature-extraction stage) instead of a synthetic sensor stream | ~5,121 |
+| [`image_classification`](image_classification/README.md) | CNN | Classify a pet photo as cat or dog -- same whole-image-at-once shape as `character_recognition`, but on ~23,000 real photos from two public datasets, with accuracy broken down per breed | ~25K |
 
 ## [`character_recognition`](character_recognition/README.md)
 
@@ -32,3 +33,9 @@ Continuously monitors a much longer simulated accelerometer stream for a fall --
 ## [`wake_word_detection`](wake_word_detection/README.md)
 
 Classifies a whole ~1-second spoken utterance as a single wake word ("marvin") or not -- the always-on listener in front of a voice-controlled device. Structurally it's a fixed-window classifier like `gesture_recognition` (one label per whole window, not `fall_detection`'s per-timestep-varying one), but it's the first example built on a real, downloaded dataset (Google Speech Commands) instead of a synthetic generator, which means the model needs a real signal-processing stage -- a new `audio_features.[ch]` at the repository root (framing, FFT, mel filterbank, per-clip-normalized log energy) -- in front of a recurrent layer. An early version of this example compared the same three recurrent architectures `fall_detection` does; on this real, noisier task GRU won clearly (unlike `fall_detection`'s task, where all three tie), so `train.c` here trains GRU alone -- see this example's own README for the measured numbers, why normalization mattered more than architecture choice, and the library-vs-application split its `predict.c` illustrates.
+
+## [`image_classification`](image_classification/README.md)
+
+<img src="image_classification/architecture.svg" alt="Image classification CNN architecture diagram" width="520"><br>
+
+Tells a cat from a dog in a photo (the Kaggle Cats and Dogs and Oxford-IIIT Pet datasets) -- the decision a camera-equipped pet door or feeder has to make on-device before letting the right animal through. Architecturally it's a step back to `character_recognition`'s territory (a CNN looking at one whole image, no memory), but it closes the loop on the story the other examples tell about realism: ordinary photos instead of centered digits, 37 breeds instead of one look per class, and a per-breed accuracy breakdown that shows exactly which cats and dogs the model confuses. Its README reports the measured numbers as they are, including how much room there is left above them.

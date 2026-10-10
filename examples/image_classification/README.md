@@ -16,7 +16,7 @@ The pieces map onto firmware the same way that example's do:
 
 ## The datasets
 
-`prepare_data.c` decodes the images with [`stb_image.h`](https://github.com/nothings/stb) (vendored in this directory; public domain / MIT; v2.30, commit `2c980bb`) and writes the CSVs below instead of reshuffling with `../../split.py`:
+`prepare_data.c` decodes the images with [`stb_image.h`](https://github.com/nothings/stb) (vendored at the repository root and shared with [`object_detection`](../object_detection/README.md); public domain / MIT; v2.30, commit `2c980bb`) and writes the CSVs below instead of reshuffling with `../../split.py`:
 
 | File | Source | Cat images | Dog images |
 |---|---|---|---|

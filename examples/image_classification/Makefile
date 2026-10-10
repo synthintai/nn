@@ -37,14 +37,14 @@ train: train.c image_prep.h ../../data_prep.o ../../libnn.a
 test: test.c image_prep.o ../../data_prep.o ../../libnn.a
 	$(CC) $(CFLAGS) -I../.. test.c image_prep.o ../../data_prep.o ../../libnn.a $(LDFLAGS) -o $@
 
-# predict.c and prepare_data.c decode real images (stb_image.h, vendored in
-# this directory) and run them through image_prep.[ch] instead of reading
-# data_prep.[ch]'s CSV rows.
-predict: predict.c image_prep.o stb_image.h ../../libnn.a
+# predict.c and prepare_data.c decode real images (../../stb_image.h,
+# vendored at the repository root and shared with object_detection) and run
+# them through image_prep.[ch] instead of reading data_prep.[ch]'s CSV rows.
+predict: predict.c image_prep.o ../../stb_image.h ../../libnn.a
 	$(CC) $(CFLAGS) -I../.. predict.c image_prep.o ../../libnn.a $(LDFLAGS) -o $@
 
-prepare_data: prepare_data.c image_prep.o stb_image.h
-	$(CC) $(CFLAGS) prepare_data.c image_prep.o $(LDFLAGS) -o $@
+prepare_data: prepare_data.c image_prep.o ../../stb_image.h
+	$(CC) $(CFLAGS) -I../.. prepare_data.c image_prep.o $(LDFLAGS) -o $@
 
 # `-z $@` makes curl a conditional fetch (skips re-downloading an
 # already-current archive).

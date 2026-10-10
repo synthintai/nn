@@ -1,6 +1,6 @@
 # Examples
 
-Five self-contained examples of constructing, training, and evaluating a network with this library. Each has its own Makefile (`cd examples/<name> && make`, recursing into the top-level Makefile for the shared library), its own README (embedded-system framing, architecture diagram, build/run instructions, sample output), and generates, synthesizes, or downloads its own training data -- nothing here needs to be built from the repository root.
+Six self-contained examples of constructing, training, and evaluating a network with this library. Each has its own Makefile (`cd examples/<name> && make`, recursing into the top-level Makefile for the shared library), its own README (embedded-system framing, architecture diagram, build/run instructions, sample output), and generates, synthesizes, or downloads its own training data -- nothing here needs to be built from the repository root.
 
 Read in order, they also tell a story: each example needs a little more memory (or a little more realism) than the last to solve its task, and the layer type -- or, for the last one, the extra feature-extraction stage in front of it -- tracks that escalation directly.
 
@@ -11,6 +11,7 @@ Read in order, they also tell a story: each example needs a little more memory (
 | [`fall_detection`](fall_detection/README.md) | RNN *vs.* GRU *vs.* LSTM (all three included, for comparison) | Continuously monitor a long (150-timestep) stream and flag a rare event -- needs to remember something brief that happened many steps ago, selectively, without it decaying | 337 (RNN) / 977 (GRU) / 1,297 (LSTM) |
 | [`wake_word_detection`](wake_word_detection/README.md) | GRU (the winner of a measured RNN *vs.* GRU *vs.* LSTM comparison -- see its README) | Classify a whole (49-frame) real spoken utterance as a wake word or not -- same fixed-window shape as `gesture_recognition`, but on real audio (via a new `audio_features.[ch]` feature-extraction stage) instead of a synthetic sensor stream | ~5,121 |
 | [`image_classification`](image_classification/README.md) | CNN | Classify a pet photo as cat or dog -- same whole-image-at-once shape as `character_recognition`, but on ~23,000 real photos from two public datasets, with accuracy broken down per breed | ~25K |
+| [`object_detection`](object_detection/README.md) | Fully convolutional CNN (1×1 conv heatmap head) | Find and count every red cell, white cell, and platelet in a microscope photo -- the first example with more than one answer per input: what is in the frame, where, and how many | ~16K |
 
 ## [`character_recognition`](character_recognition/README.md)
 
@@ -39,3 +40,9 @@ Classifies a whole ~1-second spoken utterance as a single wake word ("marvin") o
 <img src="image_classification/architecture.svg" alt="Image classification CNN architecture diagram" width="520"><br>
 
 Tells a cat from a dog in a photo (the Kaggle Cats and Dogs and Oxford-IIIT Pet datasets) -- the decision a camera-equipped pet door or feeder has to make on-device before letting the right animal through. Architecturally it's a step back to `character_recognition`'s territory (a CNN looking at one whole image, no memory), but it closes the loop on the story the other examples tell about realism: ordinary photos instead of centered digits, 37 breeds instead of one look per class, and a per-breed accuracy breakdown that shows exactly which cats and dogs the model confuses. Its README reports the measured numbers as they are, including how much room there is left above them.
+
+## [`object_detection`](object_detection/README.md)
+
+<img src="object_detection/architecture.svg" alt="Object detection fully convolutional network architecture diagram" width="520"><br>
+
+Finds and counts the red blood cells, white blood cells, and platelets in a microscope photo of a blood smear (the BCCD dataset) -- the job of a handheld blood analyzer that has to produce a count with no lab and no network. Every other example gives one answer per input; this one gives a list of objects, each with a class and a position. It does that without any change to the library: the network ends in a 1×1 convolution instead of a fully-connected output layer, producing one coarse heatmap per class, and a small decoder (`heatmap.[ch]`) turns each heatmap's peaks into detections. Its README measures what made that work (spreading each training target over neighboring cells, without which the rare classes never trained at all) and what didn't (a 4× range in parameter count), and shows how much of its remaining error is the dataset's own missing labels rather than the model.

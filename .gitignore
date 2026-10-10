@@ -1,6 +1,7 @@
 *.a
 *.o
 *.so
+BCCD_Dataset-*.zip
 annotations.tar.gz
 dataset
 dequantize
@@ -17,6 +18,7 @@ speech_commands_v0.02.tar.gz
 summary
 test
 test.csv
+test_boxes.txt
 test_oxford.csv
 test_oxford_labels.txt
 train
@@ -27,3 +29,4 @@ train_gru
 train_lstm
 train_rnn
 validation.csv
+validation_boxes.txt
